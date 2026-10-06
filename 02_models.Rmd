@@ -1,0 +1,113 @@
+---
+title: "02_models"
+author: "dima beaveroum"
+date: "2026-10-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# Download and filter
+dataset_file <- file.path("Data", "health_quality_dataset.rds")
+dataset <- readRDS(dataset_file)
+dataset <- dataset %>% 
+  filter(year > 2021) %>% 
+  filter(age>14)
+```
+
+```{r}
+# Recode variables
+dataset <- dataset %>% 
+  mutate(unmet_ind = ifelse(unmet_reason_1 == 1 | unmet_reason_2 == 1, 1, 0), 
+         unmet_fin = ifelse(unmet_reason_3 == 1 | unmet_reason_4 == 1, 1, 0), 
+         unmet_org = ifelse(unmet_reason_5 == 1 | unmet_reason_6 == 1 | unmet_reason_8 == 1 | unmet_reason_9 == 1, 1, 0), 
+         unmet_ter = ifelse(unmet_reason_7 == 1, 1, 0))
+```
+
+
+
+```{r}
+# Normalize Data
+dataset_norm <- dataset %>%
+  group_by(year) %>% 
+  mutate_at(vars(quality_state, wealth, age, sat_health, reg_doctors_per10k, reg_health_exp_med_pc),  ~ scales::rescale(.) %>% as.vector) %>% 
+  ungroup()
+head(dataset_norm, 5)
+```
+
+## Socdem
+
+```{r}
+library(lme4)
+m1 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + wealth + (1 | region_name), data = dataset_norm)
+summary(m1)
+```
+
+```{r}
+m2 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + wealth + sat_health + (1 | region_name), data = dataset_norm)
+summary(m2)
+```
+
+```{r}
+sjPlot::tab_model(m1, m2)
+```
+
+## Experience of Interactions
+
+```{r}
+m3 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + wealth + sat_health + as.factor(unmet) + (1 | region_name), data = dataset_norm)
+summary(m3)
+```
+
+```{r}
+dataset_norm_exp <- dataset_norm %>% 
+  filter(unmet == 1)
+
+m4 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + wealth + sat_health + as.factor(unmet_ind) + as.factor(unmet_fin) + as.factor(unmet_org) + as.factor(unmet_ter) + (1 | region_name), data = dataset_norm_exp)
+summary(m4)
+```
+
+```{r}
+sjPlot::tab_model(m3, m4)
+```
+
+
+## Regional Differences
+
+```{r}
+m5 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + wealth + sat_health + reg_doctors_per10k + (1 | region_name), data = dataset_norm)
+summary(m5)
+```
+
+```{r}
+m6 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + wealth + sat_health + reg_doctors_per10k + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
+summary(m6)
+```
+
+
+```{r}
+sjPlot::tab_model(m5, m6)
+```
+
+
+## Interaction Effects
+
+```{r}
+m7 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + wealth * reg_doctors_per10k + sat_health + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
+summary(m7)
+```
+
+
+```{r}
+m8 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + wealth * reg_health_exp_med_pc + sat_health + reg_doctors_per10k + (1 | region_name), data = dataset_norm)
+summary(m8)
+```
+
+```{r}
+sjPlot::tab_model(m7, m8)
+```
+
