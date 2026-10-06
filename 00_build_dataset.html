@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2026-10-04" />
+<meta name="date" content="2026-10-06" />
 
 <title>Сборка датасета: качество медицины глазами граждан</title>
 
@@ -1568,9 +1568,9 @@ border-radius: 0px;
 
 <h1 class="title toc-ignore">Сборка датасета: качество медицины глазами
 граждан</h1>
-<h3 class="subtitle">Объединение D002, D008 и региональных показателей
-здравоохранения в одну таблицу</h3>
-<h4 class="date">2026-10-04</h4>
+<h3 class="subtitle">Объединение D002, D008, доходов D004 и региональных
+показателей в одну таблицу</h3>
+<h4 class="date">2026-10-06</h4>
 
 </div>
 
@@ -1614,8 +1614,9 @@ border-radius: 0px;
 <p><strong>Принципы:</strong></p>
 <ul>
 <li>В датасет попадают <strong>все</strong> исходные колонки анкеты D002
-(<code>subject</code>, <code>ocenka</code>), строка респондента из D008
-и все региональные показатели.</li>
+(<code>subject</code>, <code>ocenka</code>), строка респондента из D008,
+доходы домохозяйства и респондента из D004 (в среднем за год) и все
+региональные показатели.</li>
 <li>Поверх исходных колонок сделаны <strong>гармонизированные
 переменные</strong> с понятными именами: номера вопросов в анкете
 менялись по годам, и одна и та же колонка (например, <code>GR151</code>)
@@ -1639,8 +1640,10 @@ border-radius: 0px;
 <li>Гармонизированные переменные D002 (имена без префикса).</li>
 <li><code>d008_*</code> — строка респондента из контрольной карточки
 домохозяйства (D008).</li>
-<li><code>reg_*</code> — показатели здравоохранения региона в этом
-году.</li>
+<li><code>inc_*</code> — доходы домохозяйства и респондента (D004),
+номинальные и в ценах 2024 года.</li>
+<li><code>reg_*</code> — показатели здравоохранения региона и уровень
+цен в этом году.</li>
 <li><code>subj_*</code> — исходные колонки таблицы
 <code>subject.csv</code>.</li>
 <li><code>oc_*</code> — исходные колонки таблицы
@@ -2126,9 +2129,369 @@ stopifnot(!anyDuplicated(regional[c(&quot;year&quot;, &quot;TE&quot;)]))
 dataset &lt;- dataset |&gt; left_join(regional, by = c(&quot;year&quot;, &quot;TE&quot;))
 stopifnot(nrow(dataset) == nrow(d002), all(!is.na(dataset$reg_health_exp_pc)))</code></pre>
 </div>
+<div id="уровень-цен-по-регионам-ипц" class="section level2">
+<h2>5. Уровень цен по регионам (ИПЦ)</h2>
+<p>Доходы дефлируются <strong>региональным квартальным индексом
+потребительских цен</strong> (БНС, система «Талдау», показатель 703076,
+группа «Товары и услуги»). Исходный ряд сохранён в
+<code>Data/regional_sources/taldau_703076_cpi_quarterly.csv</code>; его
+можно скачать заново:
+<code>https://taldau.stat.gov.kz/ru/Api/GetIndexData/703076?period=5&amp;dics=67,848,2753</code>
+(ответ около 150 МБ — в нём все товарные группы, берём только «Товары и
+услуги»).</p>
+<p>Как строится уровень цен:</p>
+<ol style="list-style-type: decimal">
+<li>По индексам «к предыдущему кварталу» строится цепочка уровней цен
+региона.</li>
+<li><strong>Пропуск — I квартал 2022 года</strong> у ВКО, Абая, Жетісу и
+Ұлытау (квартал раздела областей). Он восстанавливается точно: уровень
+II квартала 2022 года = уровень II квартала 2021 года × индекс «к тому
+же кварталу прошлого года», а I квартал = II квартал / индекс «к
+предыдущему».</li>
+<li>Для областей Абай, Жетісу и Ұлытау до 2022 года берётся уровень
+материнской области (ВКО, Алматинская, Карагандинская) — в 2021 году эти
+территории входили в неё.</li>
+<li><strong>База — средний уровень цен 2024 года в своём регионе =
+1.</strong> Реальный доход = номинальный / уровень цен квартала, то есть
+«в ценах 2024 года».</li>
+</ol>
+<p>Индекс показывает изменение цен во времени внутри региона, но не
+выравнивает уровень цен между регионами.</p>
+<pre class="r"><code>cpi_raw &lt;- read_csv(file.path(out_dir, &quot;regional_sources&quot;, &quot;taldau_703076_cpi_quarterly.csv&quot;),
+                    col_types = cols(year = col_integer(), quarter = col_integer(),
+                                     cpi = col_double(), .default = col_character()))
+
+cpi_te &lt;- c(
+  &quot;ОБЛАСТЬ АБАЙ&quot; = &quot;10&quot;, &quot;АКМОЛИНСКАЯ ОБЛАСТЬ&quot; = &quot;11&quot;, &quot;АКТЮБИНСКАЯ ОБЛАСТЬ&quot; = &quot;15&quot;,
+  &quot;АЛМАТИНСКАЯ ОБЛАСТЬ&quot; = &quot;19&quot;, &quot;АТЫРАУСКАЯ ОБЛАСТЬ&quot; = &quot;23&quot;, &quot;ЗАПАДНО-КАЗАХСТАНСКАЯ ОБЛАСТЬ&quot; = &quot;27&quot;,
+  &quot;ЖАМБЫЛСКАЯ ОБЛАСТЬ&quot; = &quot;31&quot;, &quot;ОБЛАСТЬ ЖЕТІСУ&quot; = &quot;33&quot;, &quot;КАРАГАНДИНСКАЯ ОБЛАСТЬ&quot; = &quot;35&quot;,
+  &quot;КОСТАНАЙСКАЯ ОБЛАСТЬ&quot; = &quot;39&quot;, &quot;КЫЗЫЛОРДИНСКАЯ ОБЛАСТЬ&quot; = &quot;43&quot;, &quot;МАНГИСТАУСКАЯ ОБЛАСТЬ&quot; = &quot;47&quot;,
+  &quot;ПАВЛОДАРСКАЯ ОБЛАСТЬ&quot; = &quot;55&quot;, &quot;СЕВЕРО-КАЗАХСТАНСКАЯ ОБЛАСТЬ&quot; = &quot;59&quot;,
+  &quot;ТУРКЕСТАНСКАЯ ОБЛАСТЬ&quot; = &quot;61&quot;, &quot;ОБЛАСТЬ ҰЛЫТАУ&quot; = &quot;62&quot;, &quot;ВОСТОЧНО-КАЗАХСТАНСКАЯ ОБЛАСТЬ&quot; = &quot;63&quot;,
+  &quot;Г.АСТАНА&quot; = &quot;71&quot;, &quot;Г.АЛМАТЫ&quot; = &quot;75&quot;, &quot;Г.ШЫМКЕНТ&quot; = &quot;79&quot;, &quot;РЕСПУБЛИКА КАЗАХСТАН&quot; = &quot;00&quot;
+)
+stopifnot(all(cpi_raw$region %in% names(cpi_te)))
+parent_region &lt;- c(&quot;10&quot; = &quot;63&quot;, &quot;33&quot; = &quot;19&quot;, &quot;62&quot; = &quot;35&quot;)   # новая область → материнская
+
+# t — сквозной номер квартала; цепочка начинается с IV квартала 2020 года
+quarter_t &lt;- function(year, quarter) year * 4L + quarter - 1L
+t_all &lt;- quarter_t(2020L, 4L):quarter_t(2024L, 4L)
+t_2021q4 &lt;- quarter_t(2021L, 4L)
+
+cpi &lt;- cpi_raw |&gt;
+  transmute(TE = unname(cpi_te[region]), t = quarter_t(year, quarter), ratio = cpi / 100,
+            base = if_else(startsWith(base, &quot;к предыдущему&quot;), &quot;prev&quot;, &quot;yoy&quot;)) |&gt;
+  pivot_wider(names_from = base, values_from = ratio)
+stopifnot(!anyDuplicated(cpi[c(&quot;TE&quot;, &quot;t&quot;)]))
+
+price_chain &lt;- function(te) {
+  s &lt;- filter(cpi, TE == te)
+  prev &lt;- s$prev[match(t_all, s$t)]
+  yoy  &lt;- s$yoy[match(t_all, s$t)]
+  L &lt;- rep(NA_real_, length(t_all))
+  if (te %in% names(parent_region)) {
+    early &lt;- t_all &lt;= t_2021q4
+    L[early] &lt;- price_chain(parent_region[[te]])[early]
+  } else {
+    L[1] &lt;- 1
+  }
+  for (i in seq_along(t_all)[-1]) {
+    if (!is.na(L[i])) next
+    if (!is.na(prev[i]) &amp;&amp; !is.na(L[i - 1])) {
+      L[i] &lt;- L[i - 1] * prev[i]
+    } else if (i &gt; 4 &amp;&amp; !is.na(yoy[i]) &amp;&amp; !is.na(L[i - 4])) {
+      L[i] &lt;- L[i - 4] * yoy[i]                                 # пропуск: через годовой индекс
+      if (is.na(L[i - 1]) &amp;&amp; !is.na(prev[i])) L[i - 1] &lt;- L[i] / prev[i]
+    }
+  }
+  L
+}
+
+price_q &lt;- tibble(TE = setdiff(unname(cpi_te), &quot;00&quot;)) |&gt;
+  mutate(level = map(TE, price_chain)) |&gt;
+  unnest_longer(level) |&gt;
+  mutate(t = rep(t_all, n() / length(t_all)), year = t %/% 4L, quarter = t %% 4L + 1L) |&gt;
+  filter(year &gt;= 2021) |&gt;
+  group_by(TE) |&gt;
+  mutate(price = level / mean(level[year == 2024])) |&gt;   # база: средний 2024 = 1
+  ungroup() |&gt;
+  select(TE, year, quarter, t, price)
+
+# Проверки: у старых регионов цены есть с 2021 года, у новых — с 2022; цепочка согласуется
+# с официальным индексом «к тому же кварталу прошлого года» (расхождение — только округление)
+new_te &lt;- names(parent_region)
+stopifnot(all(!is.na(price_q$price[!price_q$TE %in% new_te])),
+          all(!is.na(price_q$price[price_q$TE %in% new_te &amp; price_q$year &gt;= 2022])))
+yoy_check &lt;- price_q |&gt;
+  group_by(TE) |&gt;
+  mutate(chain_yoy = price / price[match(t - 4L, t)]) |&gt;
+  ungroup() |&gt;
+  inner_join(select(cpi, TE, t, yoy), by = c(&quot;TE&quot;, &quot;t&quot;)) |&gt;
+  filter(!is.na(chain_yoy), !is.na(yoy), !(TE %in% new_te &amp; year == 2022))
+cat(&quot;Максимальное расхождение цепочки с годовым ИПЦ, п.п.:&quot;,
+    round(100 * max(abs(yoy_check$chain_yoy - yoy_check$yoy)), 2), &quot;\n&quot;)</code></pre>
+<pre><code>## Максимальное расхождение цепочки с годовым ИПЦ, п.п.: 0.21</code></pre>
+<pre class="r"><code>stopifnot(max(abs(yoy_check$chain_yoy - yoy_check$yoy)) &lt; 0.005)
+
+# Средний за год уровень цен региона (2024 = 1) — в датасет как reg_cpi
+price_year &lt;- price_q |&gt;
+  group_by(TE, year) |&gt;
+  summarise(reg_cpi = mean(price), .groups = &quot;drop&quot;)
+
+# Для сверки с официальной среднегодовой инфляцией: средний уровень цен по РК, 2021 = 100
+tibble(level = price_chain(&quot;00&quot;), t = t_all) |&gt;
+  mutate(year = t %/% 4L) |&gt;
+  filter(year &gt;= 2021) |&gt;
+  group_by(Год = year) |&gt;
+  summarise(level = mean(level)) |&gt;
+  mutate(`Уровень цен РК (2021 = 100)` = round(100 * level / level[1], 1),
+         `Рост за год, %` = round(100 * (level / lag(level) - 1), 1)) |&gt;
+  select(-level) |&gt;
+  knitr::kable()</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="right">Год</th>
+<th align="right">Уровень цен РК (2021 = 100)</th>
+<th align="right">Рост за год, %</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="right">2021</td>
+<td align="right">100.0</td>
+<td align="right">NA</td>
+</tr>
+<tr class="even">
+<td align="right">2022</td>
+<td align="right">114.8</td>
+<td align="right">14.8</td>
+</tr>
+<tr class="odd">
+<td align="right">2023</td>
+<td align="right">131.5</td>
+<td align="right">14.5</td>
+</tr>
+<tr class="even">
+<td align="right">2024</td>
+<td align="right">142.9</td>
+<td align="right">8.6</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div id="доходы-домохозяйств-d004" class="section level2">
+<h2>6. Доходы домохозяйств (D004)</h2>
+<p>Доходы в D004 собираются поквартально (<code>kv_vopr11</code>):
+строка — член домохозяйства, у которого был доход, колонки
+<code>GR1–GR23</code> — суммы по видам дохода за квартал, тг.
+Моделирование идёт на уровне года, поэтому кварталы
+<strong>усредняются</strong>:</p>
+<p><span class="math display">\[\text{доход в месяц} =
+\frac{\sum_{\text{кварталы участия}} \text{доход за квартал}}{3 \cdot
+\text{число кварталов участия}}\]</span></p>
+<ul>
+<li><strong>Кварталы участия</strong> — по <code>kv_vopr0</code>
+(<code>REZ = 1</code>). Часть домохозяйств выбывает в течение года;
+деление на число кварталов участия не даёт им выглядеть бедными.</li>
+<li><strong>Денежный доход</strong> — сумма всех <code>GR</code>, кроме
+<code>GR3</code> (уже входит в <code>GR2</code>) и натуральных
+<code>GR12</code>, <code>GR14</code>, <code>GR23</code>.</li>
+<li><strong>Реальный доход</strong>: доход каждого квартала делится на
+уровень цен региона в этом квартале (раздел 5), затем усредняется — в
+ценах 2024 года.</li>
+<li><strong>Размер домохозяйства</strong> — число членов по D008
+(<code>KOL_CHL</code>, совпадает с числом строк). Душевой доход
+<code>inc_pc</code> = доход / размер (определение БНС), эквивалентный
+<code>inc_eq</code> = доход / √размер (шкала «квадратный корень» ОЭСР —
+учитывает экономию на общих расходах).</li>
+<li><strong>Пропуски</strong>: если домохозяйство отказалось от D004 во
+всех кварталах, доходы — <code>NA</code>; если участвовало, но не
+указало ни одного дохода, — 0. Личный доход респондента — 0, если у него
+нет строки в <code>kv_vopr11</code> (в неё попадают только члены
+домохозяйства с доходом).</li>
+</ul>
+<pre class="r"><code>q_grid  &lt;- expand_grid(year = years, quarter = 1:4)
+gr_all   &lt;- paste0(&quot;GR&quot;, 1:23)
+gr_money &lt;- paste0(&quot;GR&quot;, setdiff(1:23, c(3, 12, 14, 23)))
+
+participation &lt;- pmap(q_grid, \(year, quarter) {
+  read_form(file.path(data_dir, &quot;d004&quot;, year, paste0(quarter, &quot;kv&quot;), &quot;kv_vopr0.csv&quot;)) |&gt;
+    transmute(year = as.integer(year), quarter, NOMER, REZ)
+}) |&gt; list_rbind()
+stopifnot(!anyDuplicated(participation[c(&quot;year&quot;, &quot;quarter&quot;, &quot;NOMER&quot;)]),
+          all(participation$REZ %in% c(&quot;1&quot;, &quot;2&quot;)))
+
+income_rows &lt;- pmap(q_grid, \(year, quarter) {
+  read_form(file.path(data_dir, &quot;d004&quot;, year, paste0(quarter, &quot;kv&quot;), &quot;kv_vopr11.csv&quot;)) |&gt;
+    mutate(year = as.integer(year), quarter = quarter)
+}) |&gt; list_rbind() |&gt;
+  mutate(across(all_of(gr_all), as.numeric))
+stopifnot(!anyDuplicated(income_rows[c(&quot;year&quot;, &quot;quarter&quot;, &quot;NOMER&quot;, &quot;NOMP&quot;)]),
+          all(!is.na(as.matrix(income_rows[gr_all]))))
+
+income_rows &lt;- income_rows |&gt;
+  mutate(money = rowSums(across(all_of(gr_money)))) |&gt;
+  left_join(select(price_q, TE, year, quarter, price), by = c(&quot;TE&quot;, &quot;year&quot;, &quot;quarter&quot;)) |&gt;
+  mutate(money_real = money / price)
+stopifnot(all(!is.na(income_rows$price)),
+          # строки доходов есть только в кварталах участия
+          nrow(semi_join(income_rows, filter(participation, REZ == &quot;2&quot;),
+                         by = c(&quot;year&quot;, &quot;quarter&quot;, &quot;NOMER&quot;))) == 0)
+
+hh_income &lt;- income_rows |&gt;
+  group_by(year, NOMER) |&gt;
+  summarise(money = sum(money), money_real = sum(money_real), across(all_of(gr_all), sum),
+            .groups = &quot;drop&quot;)
+
+resp_income &lt;- income_rows |&gt;
+  group_by(year, NOMER, NOMP) |&gt;
+  summarise(resp_money = sum(money), resp_money_real = sum(money_real), .groups = &quot;drop&quot;)
+
+income_hh &lt;- participation |&gt;
+  group_by(year, NOMER) |&gt;
+  summarise(inc_quarters = sum(REZ == &quot;1&quot;), .groups = &quot;drop&quot;) |&gt;
+  left_join(hh_income, by = c(&quot;year&quot;, &quot;NOMER&quot;)) |&gt;
+  left_join(count(d008, year, NOMER, name = &quot;inc_hh_size&quot;), by = c(&quot;year&quot;, &quot;NOMER&quot;)) |&gt;
+  mutate(
+    inc_status = case_when(inc_quarters == 0 ~ &quot;отказ во всех кварталах&quot;,
+                           is.na(money) ~ &quot;участвовало, доходов нет&quot;,
+                           TRUE ~ &quot;доход есть&quot;),
+    months = if_else(inc_quarters &gt; 0, 3 * inc_quarters, NA_real_),
+    across(c(money, money_real, all_of(gr_all)), \(x) coalesce(x, 0) / months),
+    inc_hh = money, inc_hh_real = money_real,
+    inc_pc = inc_hh / inc_hh_size, inc_pc_real = inc_hh_real / inc_hh_size,
+    inc_eq = inc_hh / sqrt(inc_hh_size), inc_eq_real = inc_hh_real / sqrt(inc_hh_size),
+    inc_share_wage = if_else(inc_hh &gt; 0, (GR1 + GR2) / inc_hh, NA_real_),
+    inc_share_pension = if_else(inc_hh &gt; 0, GR4 / inc_hh, NA_real_),
+    inc_social = as.integer(GR6 + GR8 + GR9 + GR10 &gt; 0)
+  ) |&gt;
+  rename_with(\(x) paste0(&quot;inc_&quot;, x), all_of(gr_all)) |&gt;
+  select(year, NOMER, months, starts_with(&quot;inc_&quot;))
+
+dataset &lt;- dataset |&gt;
+  left_join(income_hh, by = c(&quot;year&quot;, &quot;NOMER&quot;)) |&gt;
+  left_join(resp_income, by = c(&quot;year&quot;, &quot;NOMER&quot;, &quot;NOMP&quot;)) |&gt;
+  mutate(
+    inc_resp = coalesce(resp_money, 0) / months,
+    inc_resp_real = coalesce(resp_money_real, 0) / months,
+    inc_resp_any = as.integer(inc_resp &gt; 0),
+    inc_eq_real_log = if_else(inc_eq_real &gt; 0, log(inc_eq_real), NA_real_)
+  ) |&gt;
+  # одна строка датасета = одно домохозяйство, поэтому средние и квинтили — по домохозяйствам
+  group_by(year, TE) |&gt;
+  mutate(inc_eq_real_log_region = mean(inc_eq_real_log, na.rm = TRUE),
+         inc_eq_real_log_within = inc_eq_real_log - inc_eq_real_log_region) |&gt;
+  group_by(year) |&gt;
+  mutate(inc_quintile = ntile(inc_eq, 5)) |&gt;
+  ungroup() |&gt;
+  select(-months, -resp_money, -resp_money_real) |&gt;
+  left_join(price_year, by = c(&quot;TE&quot;, &quot;year&quot;))
+
+# Проверки
+inc_gr_money &lt;- paste0(&quot;inc_&quot;, gr_money)
+stopifnot(nrow(dataset) == nrow(d002),
+          all(!is.na(dataset$inc_quarters)),                       # все ДХ D002 есть в D004
+          all(is.na(dataset$inc_hh) == (dataset$inc_status == &quot;отказ во всех кварталах&quot;)),
+          all(abs(rowSums(dataset[inc_gr_money]) - dataset$inc_hh) &lt; 1e-6, na.rm = TRUE),
+          all(dataset$inc_resp &lt;= dataset$inc_hh + 1e-6, na.rm = TRUE),
+          all(!is.na(dataset$reg_cpi)),
+          !anyDuplicated(dataset[c(&quot;year&quot;, &quot;NOMER&quot;)]))
+
+dataset |&gt;
+  group_by(Год = year) |&gt;
+  summarise(`Доход есть` = sum(inc_status == &quot;доход есть&quot;),
+            `Участвовало, доходов нет` = sum(inc_status == &quot;участвовало, доходов нет&quot;),
+            `Отказ во всех кварталах (NA)` = sum(inc_status == &quot;отказ во всех кварталах&quot;),
+            `Неполное участие (1–3 кв.)` = sum(inc_quarters %in% 1:3),
+            `Медиана inc_pc, тг/мес` = round(median(inc_pc, na.rm = TRUE)),
+            `Медиана inc_pc_real, тг 2024/мес` = round(median(inc_pc_real, na.rm = TRUE)),
+            `Медиана inc_eq_real` = round(median(inc_eq_real, na.rm = TRUE)),
+            `Личный доход &gt; 0 (15+)` = scales::percent(mean(inc_resp_any[age &gt;= 15], na.rm = TRUE), 0.1)) |&gt;
+  knitr::kable()</code></pre>
+<table>
+<colgroup>
+<col width="2%" />
+<col width="5%" />
+<col width="12%" />
+<col width="14%" />
+<col width="13%" />
+<col width="11%" />
+<col width="16%" />
+<col width="10%" />
+<col width="11%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="right">Год</th>
+<th align="right">Доход есть</th>
+<th align="right">Участвовало, доходов нет</th>
+<th align="right">Отказ во всех кварталах (NA)</th>
+<th align="right">Неполное участие (1–3 кв.)</th>
+<th align="right">Медиана inc_pc, тг/мес</th>
+<th align="right">Медиана inc_pc_real, тг 2024/мес</th>
+<th align="right">Медиана inc_eq_real</th>
+<th align="left">Личный доход &gt; 0 (15+)</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="right">2021</td>
+<td align="right">11887</td>
+<td align="right">20</td>
+<td align="right">46</td>
+<td align="right">321</td>
+<td align="right">74230</td>
+<td align="right">106394</td>
+<td align="right">181143</td>
+<td align="left">85.9%</td>
+</tr>
+<tr class="even">
+<td align="right">2022</td>
+<td align="right">11867</td>
+<td align="right">14</td>
+<td align="right">53</td>
+<td align="right">201</td>
+<td align="right">85651</td>
+<td align="right">106810</td>
+<td align="right">182932</td>
+<td align="left">94.3%</td>
+</tr>
+<tr class="odd">
+<td align="right">2023</td>
+<td align="right">11918</td>
+<td align="right">12</td>
+<td align="right">23</td>
+<td align="right">270</td>
+<td align="right">101056</td>
+<td align="right">109901</td>
+<td align="right">188168</td>
+<td align="left">94.3%</td>
+</tr>
+<tr class="even">
+<td align="right">2024</td>
+<td align="right">11885</td>
+<td align="right">12</td>
+<td align="right">34</td>
+<td align="right">247</td>
+<td align="right">114115</td>
+<td align="right">114172</td>
+<td align="right">194089</td>
+<td align="left">93.9%</td>
+</tr>
+</tbody>
+</table>
+</div>
 <div id="производные-поля-и-порядок-столбцов" class="section level2">
-<h2>5. Производные поля и порядок столбцов</h2>
-<pre class="r"><code>region_names &lt;- c(
+<h2>7. Производные поля и порядок столбцов</h2>
+<pre class="r"><code>inc_cols &lt;- c(&quot;inc_status&quot;, &quot;inc_quarters&quot;, &quot;inc_hh_size&quot;,
+              &quot;inc_hh&quot;, &quot;inc_pc&quot;, &quot;inc_eq&quot;, &quot;inc_hh_real&quot;, &quot;inc_pc_real&quot;, &quot;inc_eq_real&quot;,
+              &quot;inc_eq_real_log&quot;, &quot;inc_eq_real_log_region&quot;, &quot;inc_eq_real_log_within&quot;, &quot;inc_quintile&quot;,
+              &quot;inc_share_wage&quot;, &quot;inc_share_pension&quot;, &quot;inc_social&quot;,
+              &quot;inc_resp&quot;, &quot;inc_resp_real&quot;, &quot;inc_resp_any&quot;, paste0(&quot;inc_&quot;, gr_all))
+stopifnot(setequal(inc_cols, grep(&quot;^inc_&quot;, names(dataset), value = TRUE)))
+
+region_names &lt;- c(
   &quot;10&quot; = &quot;Абай&quot;, &quot;11&quot; = &quot;Акмолинская&quot;, &quot;15&quot; = &quot;Актюбинская&quot;, &quot;19&quot; = &quot;Алматинская&quot;,
   &quot;23&quot; = &quot;Атырауская&quot;, &quot;27&quot; = &quot;Западно-Казахстанская&quot;, &quot;31&quot; = &quot;Жамбылская&quot;, &quot;33&quot; = &quot;Жетісу&quot;,
   &quot;35&quot; = &quot;Карагандинская&quot;, &quot;39&quot; = &quot;Костанайская&quot;, &quot;43&quot; = &quot;Кызылординская&quot;,
@@ -2145,15 +2508,15 @@ dataset &lt;- dataset |&gt;
          under15 = age &lt; 15,
          across(all_of(setdiff(harm$var, reasons$var)), as.integer)) |&gt;
   select(year, NOMER, NOMP, TE, region_name, K, area, POL, sex, age, under15,
-         all_of(harm$var), starts_with(&quot;d008_&quot;), starts_with(&quot;reg_&quot;),
+         all_of(harm$var), starts_with(&quot;d008_&quot;), all_of(inc_cols), starts_with(&quot;reg_&quot;),
          starts_with(&quot;subj_&quot;), starts_with(&quot;oc_&quot;))
 
 cat(&quot;Строк:&quot;, nrow(dataset), &quot; столбцов:&quot;, ncol(dataset),
     &quot; младше 15 лет:&quot;, sum(dataset$under15), &quot;\n&quot;)</code></pre>
-<pre><code>## Строк: 47771  столбцов: 313  младше 15 лет: 1972</code></pre>
+<pre><code>## Строк: 47771  столбцов: 356  младше 15 лет: 1972</code></pre>
 </div>
 <div id="подписи-столбцов" class="section level2">
-<h2>6. Подписи столбцов</h2>
+<h2>8. Подписи столбцов</h2>
 <p>Подпись хранится в атрибуте <code>label</code> каждого столбца. Для
 исходных колонок <code>subj_*</code> и <code>oc_*</code> подпись
 говорит, какой гармонизированной переменной колонка соответствует в
@@ -2216,8 +2579,53 @@ reg_labels &lt;- c(
   reg_beds_per10k = &quot;Больничные койки на 10 000 населения (Талдау 704310 / население)&quot;,
   reg_health_exp_med_pc = &quot;Текущие расходы организаций здравоохранения (без соцуслуг) на человека, тг (БНС, лист 1.2; 2022–2024)&quot;,
   reg_hospital_exp_pc = &quot;Текущие расходы больничных организаций на человека, тг (БНС, лист 1.3; 2022–2024)&quot;,
-  reg_primary_exp_pc = &quot;Текущие расходы общей врачебной практики на человека, тг (БНС, лист 1.4; 2022–2024)&quot;
+  reg_primary_exp_pc = &quot;Текущие расходы общей врачебной практики на человека, тг (БНС, лист 1.4; 2022–2024)&quot;,
+  reg_cpi = &quot;Средний за год уровень потребительских цен региона, средний 2024 = 1 (ИПЦ Талдау 703076)&quot;
 )
+
+income_names &lt;- c(
+  GR1 = &quot;работа по найму&quot;, GR2 = &quot;работа не по найму (самозанятость, предпринимательство)&quot;,
+  GR3 = &quot;в т. ч. продажа сельхозпродукции (часть GR2, в итог не входит)&quot;,
+  GR4 = &quot;пенсии по возрасту&quot;, GR5 = &quot;стипендии&quot;, GR6 = &quot;адресная социальная помощь&quot;,
+  GR7 = &quot;жилищная помощь&quot;, GR8 = &quot;госпособия семьям с детьми&quot;, GR9 = &quot;государственные социальные пособия&quot;,
+  GR10 = &quot;специальные госпособия&quot;, GR11 = &quot;другие трансферты от государства&quot;,
+  GR12 = &quot;соцтрансферты в натуральной форме (в денежный доход не входят)&quot;,
+  GR13 = &quot;материальная помощь деньгами&quot;, GR14 = &quot;материальная помощь в натуре (в денежный доход не входит)&quot;,
+  GR15 = &quot;прочие трансферты&quot;, GR16 = &quot;алименты&quot;, GR17 = &quot;продажа недвижимости&quot;,
+  GR18 = &quot;продажа имущества&quot;, GR19 = &quot;доход от собственности&quot;, GR20 = &quot;сдача жилья в аренду&quot;,
+  GR21 = &quot;сдача земли и техники в аренду&quot;, GR22 = &quot;прочие денежные поступления&quot;,
+  GR23 = &quot;дотации и льготы (в денежный доход не входят)&quot;
+)
+
+src_inc &lt;- &quot;D004 kv_vopr11 (+ kv_vopr0, D008)&quot;
+src_real &lt;- &quot;D004 kv_vopr11 + ИПЦ Талдау 703076&quot;
+money_def &lt;- &quot;денежный доход = GR1–GR23 без GR3, GR12, GR14, GR23&quot;
+inc_labels &lt;- tribble(
+  ~var,                     ~label,                                                                          ~source,   ~codes,
+  &quot;inc_status&quot;,             &quot;Данные о доходе домохозяйства в D004&quot;,                                         src_inc,   &quot;доход есть / участвовало, доходов нет (доход 0) / отказ во всех кварталах (доходы NA)&quot;,
+  &quot;inc_quarters&quot;,           &quot;Число кварталов года, в которых домохозяйство участвовало в D004&quot;,             &quot;D004 kv_vopr0 (REZ = 1)&quot;, &quot;0–4&quot;,
+  &quot;inc_hh_size&quot;,            &quot;Размер домохозяйства, человек&quot;,                                                &quot;D008 (KOL_CHL)&quot;, &quot;&quot;,
+  &quot;inc_hh&quot;,                 paste0(&quot;Денежный доход домохозяйства, тг в месяц, в среднем за кварталы участия (&quot;, money_def, &quot;)&quot;), src_inc, &quot;&quot;,
+  &quot;inc_pc&quot;,                 &quot;Денежный доход на члена домохозяйства, тг в месяц (inc_hh / inc_hh_size)&quot;,    src_inc,   &quot;&quot;,
+  &quot;inc_eq&quot;,                 &quot;Эквивалентный денежный доход, тг в месяц (inc_hh / √inc_hh_size, шкала «квадратный корень» ОЭСР)&quot;, src_inc, &quot;&quot;,
+  &quot;inc_hh_real&quot;,            &quot;Денежный доход домохозяйства в ценах 2024 года, тг в месяц (каждый квартал / уровень цен региона)&quot;, src_real, &quot;&quot;,
+  &quot;inc_pc_real&quot;,            &quot;Доход на члена домохозяйства в ценах 2024 года, тг в месяц&quot;,                  src_real,  &quot;&quot;,
+  &quot;inc_eq_real&quot;,            &quot;Эквивалентный доход в ценах 2024 года, тг в месяц&quot;,                           src_real,  &quot;&quot;,
+  &quot;inc_eq_real_log&quot;,        &quot;log(inc_eq_real) — основная мера дохода для регрессий&quot;,                       src_real,  &quot;NA при нулевом доходе&quot;,
+  &quot;inc_eq_real_log_region&quot;, &quot;Среднее inc_eq_real_log по региону и году (уровень региона)&quot;,                  src_real,  &quot;&quot;,
+  &quot;inc_eq_real_log_within&quot;, &quot;inc_eq_real_log − inc_eq_real_log_region (положение относительно своего региона)&quot;, src_real, &quot;&quot;,
+  &quot;inc_quintile&quot;,           &quot;Квинтиль эквивалентного дохода inc_eq внутри года&quot;,                            src_inc,   &quot;1 — 20% беднейших … 5 — 20% богатейших&quot;,
+  &quot;inc_share_wage&quot;,         &quot;Доля работы по найму и не по найму (GR1 + GR2) в денежном доходе&quot;,            src_inc,   &quot;0–1; NA при нулевом доходе&quot;,
+  &quot;inc_share_pension&quot;,      &quot;Доля пенсий (GR4) в денежном доходе&quot;,                                          src_inc,   &quot;0–1; NA при нулевом доходе&quot;,
+  &quot;inc_social&quot;,             &quot;Домохозяйство получает адресную помощь, пособия на детей, ГСП или спецпособия (GR6, GR8–GR10)&quot;, src_inc, &quot;1 да, 0 нет&quot;,
+  &quot;inc_resp&quot;,               &quot;Личный денежный доход респондента, тг в месяц, в среднем за кварталы участия домохозяйства&quot;, src_inc, &quot;0 — нет своего дохода&quot;,
+  &quot;inc_resp_real&quot;,          &quot;Личный денежный доход респондента в ценах 2024 года, тг в месяц&quot;,             src_real,  &quot;0 — нет своего дохода&quot;,
+  &quot;inc_resp_any&quot;,           &quot;У респондента есть свой денежный доход&quot;,                                       src_inc,   &quot;1 да, 0 нет&quot;
+) |&gt;
+  bind_rows(tibble(var = paste0(&quot;inc_&quot;, gr_all),
+                   label = paste0(&quot;Доход домохозяйства по виду &quot;, gr_all, &quot;: &quot;, income_names[gr_all],
+                                  &quot;, тг в месяц, номинальный&quot;),
+                   source = paste0(&quot;D004 kv_vopr11, &quot;, gr_all), codes = &quot;&quot;))
 
 raw_label &lt;- function(col, prefix, file) {
   orig &lt;- sub(paste0(&quot;^&quot;, prefix), &quot;&quot;, col)
@@ -2238,6 +2646,7 @@ dictionary &lt;- bind_rows(
            label = coalesce(d008_labels[orig], paste(&quot;Колонка D008&quot;, orig)),
            source = paste0(&quot;D008 kontr_k.csv, &quot;, orig), codes = &quot;&quot;) |&gt;
     select(-orig),
+  inc_labels,
   tibble(var = grep(&quot;^reg_&quot;, names(dataset), value = TRUE)) |&gt;
     mutate(label = coalesce(reg_labels[var], var), source = &quot;Региональные показатели&quot;, codes = &quot;&quot;),
   tibble(var = grep(&quot;^subj_&quot;, names(dataset), value = TRUE)) |&gt;
@@ -2258,15 +2667,15 @@ for (v in names(dataset)) attr(dataset[[v]], &quot;label&quot;) &lt;- unname(ful
 
 dictionary |&gt;
   filter(!startsWith(var, &quot;subj_&quot;), !startsWith(var, &quot;oc_&quot;)) |&gt;
-  head(45) |&gt;
+  head(90) |&gt;
   knitr::kable(caption = &quot;Начало словаря (без исходных колонок subj_ и oc_)&quot;)</code></pre>
 <table>
 <caption>Начало словаря (без исходных колонок subj_ и oc_)</caption>
 <colgroup>
-<col width="4%" />
-<col width="41%" />
-<col width="24%" />
-<col width="29%" />
+<col width="5%" />
+<col width="43%" />
+<col width="22%" />
+<col width="28%" />
 </colgroup>
 <thead>
 <tr class="header">
@@ -2625,11 +3034,304 @@ ocenka.GR320_10; 2024 ocenka.GR320_10</td>
 <td align="left">D008 kontr_k.csv, POL</td>
 <td align="left"></td>
 </tr>
+<tr class="even">
+<td align="left">d008_ROST</td>
+<td align="left">Рост, см</td>
+<td align="left">D008 kontr_k.csv, ROST</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_SEM_POL</td>
+<td align="left">Семейное положение (18+): 1 никогда не состоял(а), 2 в
+браке, 3 вдовец/вдова, 4 разведён(а)</td>
+<td align="left">D008 kontr_k.csv, SEM_POL</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_UROV</td>
+<td align="left">Образование: 1 дошкольное, 2 начальное, 3 основное
+среднее, 4 среднее / ТиПО, 5 высшее, 6 послевузовское, 7 нет</td>
+<td align="left">D008 kontr_k.csv, UROV</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_VR_OTS</td>
+<td align="left">Временно отсутствует / присутствует на 1 января (статус
++ причина)</td>
+<td align="left">D008 kontr_k.csv, VR_OTS</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_IZM_SOST</td>
+<td align="left">Переключатель: состав домохозяйства менялся (0/1)</td>
+<td align="left">D008 kontr_k.csv, IZM_SOST</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_PR_IZA</td>
+<td align="left">Изменение состава в апреле (статус × причина)</td>
+<td align="left">D008 kontr_k.csv, PR_IZA</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_PR_IZI</td>
+<td align="left">Изменение состава в июле (статус × причина)</td>
+<td align="left">D008 kontr_k.csv, PR_IZI</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_PR_IZO</td>
+<td align="left">Изменение состава в октябре (статус × причина)</td>
+<td align="left">D008 kontr_k.csv, PR_IZO</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_PR_IZYA</td>
+<td align="left">Изменение состава в январе (статус × причина)</td>
+<td align="left">D008 kontr_k.csv, PR_IZYA</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_STATUS</td>
+<td align="left">Статус основной деятельности на 1 января (15+): 1
+наёмный, 2 не по найму, 3 безработный, 4 пенсионер, 5 учащийся, 6
+домохозяйство/уход, 7 нетрудоспособный, 8 прочие неактивные</td>
+<td align="left">D008 kontr_k.csv, STATUS</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_STATUSF</td>
+<td align="left">11 — работает по найму у физического лица</td>
+<td align="left">D008 kontr_k.csv, STATUSF</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_IZM_STATUS</td>
+<td align="left">Переключатель: статус менялся в течение года (0/1)</td>
+<td align="left">D008 kontr_k.csv, IZM_STATUS</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_STATUS1</td>
+<td align="left">Статус в 1 квартале (коды как STATUS)</td>
+<td align="left">D008 kontr_k.csv, STATUS1</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_STATUSF1</td>
+<td align="left">Работа у физлица, 1 квартал</td>
+<td align="left">D008 kontr_k.csv, STATUSF1</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_STATUS2</td>
+<td align="left">Статус во 2 квартале (коды как STATUS)</td>
+<td align="left">D008 kontr_k.csv, STATUS2</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_STATUSF2</td>
+<td align="left">Работа у физлица, 2 квартал</td>
+<td align="left">D008 kontr_k.csv, STATUSF2</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_STATUS3</td>
+<td align="left">Статус в 3 квартале (коды как STATUS)</td>
+<td align="left">D008 kontr_k.csv, STATUS3</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_STATUSF3</td>
+<td align="left">Работа у физлица, 3 квартал</td>
+<td align="left">D008 kontr_k.csv, STATUSF3</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_STATUS4</td>
+<td align="left">Статус в 4 квартале (коды как STATUS)</td>
+<td align="left">D008 kontr_k.csv, STATUS4</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_STATUSF4</td>
+<td align="left">Работа у физлица, 4 квартал</td>
+<td align="left">D008 kontr_k.csv, STATUSF4</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_ZT</td>
+<td align="left">Время на заполнение (не заполнено)</td>
+<td align="left">D008 kontr_k.csv, ZT</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_GOD_ROJD</td>
+<td align="left">Год рождения (нет в 2021)</td>
+<td align="left">D008 kontr_k.csv, GOD_ROJD</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_MES_ROJD</td>
+<td align="left">Месяц рождения (нет в 2021)</td>
+<td align="left">D008 kontr_k.csv, MES_ROJD</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_FIZ</td>
+<td align="left">Занятия физкультурой (только 2024): 1 самостоятельно, 2
+в учебном заведении, 3 профессионально, 4 нет</td>
+<td align="left">D008 kontr_k.csv, FIZ</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_FIZM</td>
+<td align="left">Где занимается физкультурой (2024): 1 секции/залы, 2
+самостоятельно, 3 и то и другое</td>
+<td align="left">D008 kontr_k.csv, FIZM</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">d008_FIZCH</td>
+<td align="left">Частота занятий физкультурой (2024): 1–7 дней в неделю,
+8 от случая к случаю</td>
+<td align="left">D008 kontr_k.csv, FIZCH</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">d008_FIZMIN</td>
+<td align="left">Средняя длительность занятия, минут (2024)</td>
+<td align="left">D008 kontr_k.csv, FIZMIN</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">inc_status</td>
+<td align="left">Данные о доходе домохозяйства в D004</td>
+<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
+<td align="left">доход есть / участвовало, доходов нет (доход 0) / отказ
+во всех кварталах (доходы NA)</td>
+</tr>
+<tr class="even">
+<td align="left">inc_quarters</td>
+<td align="left">Число кварталов года, в которых домохозяйство
+участвовало в D004</td>
+<td align="left">D004 kv_vopr0 (REZ = 1)</td>
+<td align="left">0–4</td>
+</tr>
+<tr class="odd">
+<td align="left">inc_hh_size</td>
+<td align="left">Размер домохозяйства, человек</td>
+<td align="left">D008 (KOL_CHL)</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">inc_hh</td>
+<td align="left">Денежный доход домохозяйства, тг в месяц, в среднем за
+кварталы участия (денежный доход = GR1–GR23 без GR3, GR12, GR14,
+GR23)</td>
+<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">inc_pc</td>
+<td align="left">Денежный доход на члена домохозяйства, тг в месяц
+(inc_hh / inc_hh_size)</td>
+<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">inc_eq</td>
+<td align="left">Эквивалентный денежный доход, тг в месяц (inc_hh /
+√inc_hh_size, шкала «квадратный корень» ОЭСР)</td>
+<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">inc_hh_real</td>
+<td align="left">Денежный доход домохозяйства в ценах 2024 года, тг в
+месяц (каждый квартал / уровень цен региона)</td>
+<td align="left">D004 kv_vopr11 + ИПЦ Талдау 703076</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">inc_pc_real</td>
+<td align="left">Доход на члена домохозяйства в ценах 2024 года, тг в
+месяц</td>
+<td align="left">D004 kv_vopr11 + ИПЦ Талдау 703076</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">inc_eq_real</td>
+<td align="left">Эквивалентный доход в ценах 2024 года, тг в месяц</td>
+<td align="left">D004 kv_vopr11 + ИПЦ Талдау 703076</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">inc_eq_real_log</td>
+<td align="left">log(inc_eq_real) — основная мера дохода для
+регрессий</td>
+<td align="left">D004 kv_vopr11 + ИПЦ Талдау 703076</td>
+<td align="left">NA при нулевом доходе</td>
+</tr>
+<tr class="odd">
+<td align="left">inc_eq_real_log_region</td>
+<td align="left">Среднее inc_eq_real_log по региону и году (уровень
+региона)</td>
+<td align="left">D004 kv_vopr11 + ИПЦ Талдау 703076</td>
+<td align="left"></td>
+</tr>
+<tr class="even">
+<td align="left">inc_eq_real_log_within</td>
+<td align="left">inc_eq_real_log − inc_eq_real_log_region (положение
+относительно своего региона)</td>
+<td align="left">D004 kv_vopr11 + ИПЦ Талдау 703076</td>
+<td align="left"></td>
+</tr>
+<tr class="odd">
+<td align="left">inc_quintile</td>
+<td align="left">Квинтиль эквивалентного дохода inc_eq внутри года</td>
+<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
+<td align="left">1 — 20% беднейших … 5 — 20% богатейших</td>
+</tr>
+<tr class="even">
+<td align="left">inc_share_wage</td>
+<td align="left">Доля работы по найму и не по найму (GR1 + GR2) в
+денежном доходе</td>
+<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
+<td align="left">0–1; NA при нулевом доходе</td>
+</tr>
+<tr class="odd">
+<td align="left">inc_share_pension</td>
+<td align="left">Доля пенсий (GR4) в денежном доходе</td>
+<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
+<td align="left">0–1; NA при нулевом доходе</td>
+</tr>
+<tr class="even">
+<td align="left">inc_social</td>
+<td align="left">Домохозяйство получает адресную помощь, пособия на
+детей, ГСП или спецпособия (GR6, GR8–GR10)</td>
+<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
+<td align="left">1 да, 0 нет</td>
+</tr>
+<tr class="odd">
+<td align="left">inc_resp</td>
+<td align="left">Личный денежный доход респондента, тг в месяц, в
+среднем за кварталы участия домохозяйства</td>
+<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
+<td align="left">0 — нет своего дохода</td>
+</tr>
+<tr class="even">
+<td align="left">inc_resp_real</td>
+<td align="left">Личный денежный доход респондента в ценах 2024 года, тг
+в месяц</td>
+<td align="left">D004 kv_vopr11 + ИПЦ Талдау 703076</td>
+<td align="left">0 — нет своего дохода</td>
+</tr>
 </tbody>
 </table>
 </div>
 <div id="сохранение" class="section level2">
-<h2>7. Сохранение</h2>
+<h2>9. Сохранение</h2>
 <pre class="r"><code>saveRDS(dataset, file.path(out_dir, &quot;health_quality_dataset.rds&quot;))
 write_csv(dataset, file.path(out_dir, &quot;health_quality_dataset.csv&quot;), na = &quot;&quot;)
 write_csv(dictionary, file.path(out_dir, &quot;health_quality_dictionary.csv&quot;), na = &quot;&quot;)
@@ -2651,11 +3353,11 @@ tibble(Файл = c(&quot;health_quality_dataset.rds&quot;, &quot;health_quality
 <tbody>
 <tr class="odd">
 <td align="left">health_quality_dataset.rds</td>
-<td align="right">4.5</td>
+<td align="right">9.0</td>
 </tr>
 <tr class="even">
 <td align="left">health_quality_dataset.csv</td>
-<td align="right">32.6</td>
+<td align="right">49.4</td>
 </tr>
 <tr class="odd">
 <td align="left">health_quality_dictionary.csv</td>
