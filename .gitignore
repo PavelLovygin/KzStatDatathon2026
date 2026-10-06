@@ -1,0 +1,12 @@
+# Исходные таблицы датасета в репозиторий не кладём — их копируют в Data/Original
+Data/Original/
+Data/cache/
+
+# R / RStudio
+.Rhistory
+.RData
+.Rproj.user/
+Rplots.pdf
+
+# Lock-файлы
+.~lock.*#

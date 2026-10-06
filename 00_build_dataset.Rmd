@@ -1,0 +1,401 @@
+---
+title: "Сборка датасета: качество медицины глазами граждан"
+subtitle: "Объединение D002, D008 и региональных показателей здравоохранения в одну таблицу"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+})
+
+# Исходные таблицы лежат в Data/Original, результат сохраняется в корень Data/
+data_dir <- file.path("Data", "Original")
+out_dir  <- "Data"
+
+# Исходные таблицы в git не хранятся: содержимое папки с данными датасета
+# (d002/, d008/, documentation/ …) нужно скопировать в Data/Original/.
+need <- file.path(data_dir, c(paste0("d002/", 2021:2024, "/subject.csv"),
+                              paste0("d002/", 2021:2024, "/ocenka.csv"),
+                              paste0("d008/", 2021:2024, "/kontr_k.csv")))
+if (!all(file.exists(need))) {
+  stop("Не найдены исходные таблицы, например ", need[!file.exists(need)][1],
+       ". Скопируйте папку с данными датасета в Data/Original (см. README.md).")
+}
+years    <- 2021:2024
+
+read_form <- function(path) {
+  read_csv(path, col_types = cols(.default = col_character()), progress = FALSE)
+}
+```
+
+## Что получается на выходе
+
+Одна строка — **один респондент анкеты D002 в одном году** (около 12 тыс. в год, 47 771 строк
+за 2021–2024). Файлы в папке `Data/`:
+
+| Файл | Что внутри |
+|---|---|
+| `health_quality_dataset.rds` | Датасет для R. У каждого столбца есть подпись (атрибут `label`) — в RStudio она видна под именем столбца в `View()` |
+| `health_quality_dataset.csv` | Тот же датасет в CSV (UTF-8) для других программ; подписи — в словаре |
+| `health_quality_dictionary.csv` | Словарь: имя столбца, подпись, источник, коды ответов |
+
+Загрузка в R: `df <- readRDS("Data/health_quality_dataset.rds"); View(df)`.
+
+**Принципы:**
+
+* В датасет попадают **все** исходные колонки анкеты D002 (`subject`, `ocenka`), строка
+  респондента из D008 и все региональные показатели.
+* Поверх исходных колонок сделаны **гармонизированные переменные** с понятными именами: номера
+  вопросов в анкете менялись по годам, и одна и та же колонка (например, `GR151`) в разные годы
+  означает разное. Для анализа используйте гармонизированные переменные.
+* Коды ответов **не перекодируются**: «89 — не применимо / затрудняюсь ответить» сохраняется как
+  есть. Перед расчётами средних 89 нужно заменить на пропуск.
+* **Респонденты младше 15 лет не удаляются** (в данных 2022–2024 годов их около 2 тыс., включая
+  возраст −1; анкета рассчитана на 15+). Для них есть флаг `under15`.
+
+## Порядок столбцов
+
+1. Идентификаторы и демография: `year`, `NOMER`, `NOMP`, `TE`, `region_name`, `K`, `area`,
+   `POL`, `sex`, `age`, `under15`.
+2. Гармонизированные переменные D002 (имена без префикса).
+3. `d008_*` — строка респондента из контрольной карточки домохозяйства (D008).
+4. `reg_*` — показатели здравоохранения региона в этом году.
+5. `subj_*` — исходные колонки таблицы `subject.csv`.
+6. `oc_*` — исходные колонки таблицы `ocenka.csv`.
+
+## 1. Карта гармонизации
+
+Соответствие установлено по бланкам анкеты D002 каждого года и проверено на данных: у каждой
+колонки должен совпадать набор кодов ответов.
+
+```{r harmonization-map}
+scale10 <- "1–10 (1–3 не удовлетворён, 4–7 частично, 8–10 удовлетворён), 89 — не применимо / затрудняюсь"
+
+# var — имя в датасете; файл и колонка по годам (NA — вопроса в этом году нет)
+harm <- tribble(
+  ~var,                 ~label,                                                        ~codes,        ~f21,      ~c21,       ~f22,      ~c22,      ~f23,      ~c23,
+  "quality_state",      "Q15.2. Удовлетворённость качеством государственной медицины", scale10,       "subject", "GR152",    "subject", "GR151",   "subject", "GR14_1",
+  "access_state",       "Q15.3. Удовлетворённость доступностью государственной медицины", scale10,    "subject", "GR153",    "subject", "GR161",   "subject", "GR15_1",
+  "cost_state",         "Удовлетворённость стоимостью государственной медицины (только 2021)", scale10, "subject", "GR151",  NA,        NA,        NA,        NA,
+  "quality_private",    "Удовлетворённость качеством частной медицины",                scale10,       "subject", "GR162",    "subject", "GR152",   "subject", "GR14_2",
+  "access_private",     "Удовлетворённость доступностью частной медицины",             scale10,       "subject", "GR163",    "subject", "GR162",   "subject", "GR15_2",
+  "cost_private",       "Удовлетворённость стоимостью частной медицины (только 2021)", scale10,       "subject", "GR161",    NA,        NA,        NA,        NA,
+  "svc_con",            "Качество услуг Госкорпорации «Правительство для граждан» (ЦОН)", scale10,    "subject", "GR191",    "subject", "GR191",   "subject", "GR18_1",
+  "svc_tax",            "Качество услуг налоговых органов",                            scale10,       "subject", "GR192",    "subject", "GR192",   "subject", "GR18_2",
+  "svc_police",         "Качество услуг полиции",                                      scale10,       "subject", "GR193",    "subject", "GR193",   "subject", "GR18_3",
+  "svc_ambulance",      "Качество услуг станций скорой медицинской помощи",            scale10,       "subject", "GR194",    "subject", "GR194",   "subject", "GR18_4",
+  "svc_fire",           "Качество услуг пожарной службы",                              scale10,       "subject", "GR195",    "subject", "GR195",   "subject", "GR18_5",
+  "svc_other_gov",      "Качество прочих государственных услуг",                       scale10,       "subject", "GR196",    "subject", "GR196",   "subject", "GR18_6",
+  "sat_life",           "Удовлетворённость жизнью в целом",                            scale10,       "subject", "GR1",      "subject", "GR1",     "subject", "GR1",
+  "sat_living",         "Удовлетворённость условиями жизни",                           scale10,       "subject", "GR2",      "subject", "GR2",     "subject", "GR2",
+  "sat_health",         "Q3. Удовлетворённость состоянием своего здоровья",            scale10,       "subject", "GR3",      "subject", "GR3",     "subject", "GR3",
+  "sat_finance",        "Удовлетворённость своим финансовым положением",               scale10,       "subject", "GR4",      "subject", "GR4",     "subject", "GR4",
+  "wealth",             "Q2.1. Самооценка уровня материального обеспечения",
+    "1 малообеспеченные, 2 ниже среднего, 3 средний, 4 несколько выше среднего, 5 относительно состоятельные, 6 высокий",
+                                                                                                       "ocenka",  "GR1",      "ocenka",  "GR1",     "subject", "GR21",
+  "wealth_change",      "Q2.2. Изменение благосостояния за последний год",
+    "1 не изменилось, 2 улучшилось, 3 ухудшилось",                                                     "ocenka",  "GR2",      "ocenka",  "GR2",     "subject", "GR23",
+  "expectations",       "Ожидания: будете ли жить лучше в ближайший год",
+    "1–5 (коды по бланку года)",                                                                       "ocenka",  "GR3",      "ocenka",  "GR3",     "subject", "GR24",
+  "unexpected_expense", "Может ли домохозяйство покрыть непредвиденные расходы без займов",
+    "1 да, 2 нет; в 2021 ещё 3 не актуально (в 2021 без суммы в формулировке, с 2022 — 30–40 тыс. тг)", "ocenka", "GR34",    "ocenka",  "GR35",    "ocenka",  "GR35",
+  "unmet",              "Q18. Были ли случаи, когда не смогли воспользоваться услугами здравоохранения",
+    "1 да, 2 нет, 3 нет, не было необходимости",                                                       "ocenka",  "GR318",    "ocenka",  "GR319",   "ocenka",  "GR319"
+)
+
+reasons <- tribble(
+  ~k, ~label,
+  1,  "самолечение",
+  2,  "решил(а), что и так выздоровлю",
+  3,  "высокая стоимость услуг",
+  4,  "слишком дорогое лекарство",
+  5,  "большие очереди",
+  6,  "отсутствие специалиста",
+  7,  "учреждения далеко / нет возможности доехать",
+  8,  "отсутствие лекарств",
+  9,  "плохое обслуживание / не доверяю",
+  10, "другие причины"
+) |>
+  transmute(var = paste0("unmet_reason_", k),
+            label = paste0("Q19. Причина, по которой не смогли воспользоваться медпомощью: ", label),
+            codes = "1 отмечено, 0 не отмечено, NA — вопрос не задавался (Q18 ≠ 1)",
+            f21 = "ocenka", c21 = paste0("GR319_", k), f22 = "ocenka", c22 = paste0("GR320_", k),
+            f23 = "ocenka", c23 = paste0("GR320_", k))
+
+harm <- bind_rows(harm, reasons)
+
+# Длинная форма карты: год × переменная → файл и колонка (2024 = как 2023)
+harm_long <- harm |>
+  transmute(var, `2021` = paste(f21, c21), `2022` = paste(f22, c22),
+            `2023` = paste(f23, c23), `2024` = paste(f23, c23)) |>
+  pivot_longer(-var, names_to = "year", values_to = "src", names_transform = as.integer) |>
+  filter(src != "NA NA") |>
+  separate(src, c("file", "col"), sep = " ")
+
+harm |>
+  transmute(Переменная = var, Смысл = label,
+            `2021` = paste(f21, c21), `2022` = paste(f22, c22), `2023–2024` = paste(f23, c23)) |>
+  mutate(across(`2021`:`2023–2024`, \(x) na_if(x, "NA NA"))) |>
+  knitr::kable()
+```
+
+## 2. Чтение и проверка D002
+
+```{r read-d002}
+check_codes <- function(x, allowed, what) {
+  bad <- setdiff(unique(na.omit(x)), allowed)
+  if (length(bad) > 0) stop(what, ": недопустимые коды ", paste(head(bad, 10), collapse = ", "))
+}
+
+allowed_codes <- function(var) {
+  if (var == "wealth") return(as.character(1:6))
+  if (var %in% c("wealth_change", "unmet", "unexpected_expense")) return(as.character(1:3))
+  if (var == "expectations") return(as.character(1:5))
+  if (startsWith(var, "unmet_reason")) return("1")
+  as.character(c(1:10, 89))                       # шкалы удовлетворённости
+}
+
+read_d002 <- function(y) {
+  s <- read_form(file.path(data_dir, "d002", y, "subject.csv"))
+  o <- read_form(file.path(data_dir, "d002", y, "ocenka.csv"))
+  stopifnot(!anyDuplicated(s$NOMER), !anyDuplicated(o$NOMER), setequal(s$NOMER, o$NOMER))
+
+  src <- list(subject = s, ocenka = o)
+  m <- filter(harm_long, year == y)
+
+  # гармонизированные переменные с проверкой кодов
+  harmonized <- map2(m$file, m$col, \(f, cl) {
+    stopifnot(cl %in% names(src[[f]]))
+    src[[f]][[cl]][match(s$NOMER, src[[f]]$NOMER)]
+  }) |> set_names(m$var) |> as_tibble()
+  iwalk(harmonized, \(x, v) check_codes(x, allowed_codes(v), paste(y, v)))
+
+  # причины: 1/0 у тех, кому задавали вопрос (unmet = 1), NA у остальных
+  harmonized <- harmonized |>
+    mutate(across(starts_with("unmet_reason"),
+                  \(x) if_else(unmet == "1", as.integer(x %in% "1"), NA_integer_)))
+  stopifnot(sum(harmonized$unmet != "1" &
+                  rowSums(select(harmonized, starts_with("unmet_reason")), na.rm = TRUE) > 0) == 0)
+
+  bind_cols(
+    tibble(year = as.integer(y), NOMER = s$NOMER, NOMP = s$NOMP, TE = s$TE, K = s$K, POL = s$POL,
+           age = as.numeric(s$VOZ)),
+    harmonized,
+    rename_with(select(s, -NOMER), \(x) paste0("subj_", x)),
+    rename_with(select(o, -NOMER)[match(s$NOMER, o$NOMER), ], \(x) paste0("oc_", x))
+  )
+}
+
+d002 <- map(years, read_d002) |> list_rbind()
+
+# Респондент в subject и ocenka — один и тот же человек (NOMP совпадает в 97–100% случаев)
+d002 |>
+  group_by(year) |>
+  summarise(`Респондентов` = n(), `NOMP совпадает в subject и ocenka` =
+              scales::percent(mean(subj_NOMP == oc_NOMP), 0.1)) |>
+  knitr::kable()
+```
+
+## 3. Строка респондента из D008
+
+Присоединяем по `NOMER` + `NOMP`. Регион и тип местности в D008 совпадают с D002, поэтому
+дублирующие колонки не берём.
+
+```{r read-d008}
+d008 <- map(years, \(y) {
+  read_form(file.path(data_dir, "d008", y, "kontr_k.csv")) |>
+    mutate(year = as.integer(y))
+}) |> list_rbind()
+stopifnot(!anyDuplicated(d008[c("year", "NOMER", "NOMP")]))
+
+d008_resp <- d008 |>
+  select(-any_of(c("TE", "K", "GOD"))) |>
+  rename_with(\(x) paste0("d008_", x), -c(year, NOMER, NOMP))
+
+dataset <- d002 |> left_join(d008_resp, by = c("year", "NOMER", "NOMP"))
+stopifnot(nrow(dataset) == nrow(d002))
+
+dataset |>
+  group_by(year) |>
+  summarise(`Найдены в D008` = scales::percent(mean(!is.na(d008_RODSTVO)), 0.1)) |>
+  knitr::kable()
+```
+
+## 4. Региональные показатели
+
+Показатели здравоохранения региона за тот же год (`Data/health_regions.csv`):
+текущие расходы организаций здравоохранения (БНС), врачи, средний медперсонал, койки и
+население (система БНС «Талдау»). В 2021 году регионов 17 — области Абай, Жетісу и Ұлытау созданы
+в 2022 году.
+
+```{r regional}
+regional <- read_csv(file.path(out_dir, "health_regions.csv"),
+                     col_types = cols(year = col_integer(), TE = col_character(),
+                                      region = col_character(), .default = col_double())) |>
+  rename_with(\(x) paste0("reg_", x), -c(year, TE))
+stopifnot(!anyDuplicated(regional[c("year", "TE")]))
+
+dataset <- dataset |> left_join(regional, by = c("year", "TE"))
+stopifnot(nrow(dataset) == nrow(d002), all(!is.na(dataset$reg_health_exp_pc)))
+```
+
+## 5. Производные поля и порядок столбцов
+
+```{r derived}
+region_names <- c(
+  "10" = "Абай", "11" = "Акмолинская", "15" = "Актюбинская", "19" = "Алматинская",
+  "23" = "Атырауская", "27" = "Западно-Казахстанская", "31" = "Жамбылская", "33" = "Жетісу",
+  "35" = "Карагандинская", "39" = "Костанайская", "43" = "Кызылординская",
+  "47" = "Мангистауская", "55" = "Павлодарская", "59" = "Северо-Казахстанская",
+  "61" = "Туркестанская", "62" = "Ұлытау", "63" = "Восточно-Казахстанская",
+  "71" = "г. Астана", "75" = "г. Алматы", "79" = "г. Шымкент"
+)
+stopifnot(all(dataset$TE %in% names(region_names)))
+
+dataset <- dataset |>
+  mutate(region_name = unname(region_names[TE]),
+         area = if_else(K == "2", "Село", "Город"),
+         sex = if_else(POL == "2", "Женщина", "Мужчина"),
+         under15 = age < 15,
+         across(all_of(setdiff(harm$var, reasons$var)), as.integer)) |>
+  select(year, NOMER, NOMP, TE, region_name, K, area, POL, sex, age, under15,
+         all_of(harm$var), starts_with("d008_"), starts_with("reg_"),
+         starts_with("subj_"), starts_with("oc_"))
+
+cat("Строк:", nrow(dataset), " столбцов:", ncol(dataset),
+    " младше 15 лет:", sum(dataset$under15), "\n")
+```
+
+## 6. Подписи столбцов
+
+Подпись хранится в атрибуте `label` каждого столбца. Для исходных колонок `subj_*` и `oc_*`
+подпись говорит, какой гармонизированной переменной колонка соответствует в каждом году; если
+колонка не гармонизирована, её смысл нужно смотреть по бланку анкеты соответствующего года.
+
+```{r labels}
+base_labels <- tribble(
+  ~var,          ~label,                                                            ~source,             ~codes,
+  "year",        "Год обследования",                                               "—",                  "2021–2024",
+  "NOMER",       "Идентификатор домохозяйства (ГГГГ + номер; между годами не связывает)", "D002",       "",
+  "NOMP",        "Номер респондента в домохозяйстве (01 — глава)",                 "D002",               "",
+  "TE",          "Код региона (2 знака КАТО)",                                      "D002",               "10…79; в 2021 — 17 регионов",
+  "region_name", "Название региона",                                                "по коду TE",         "",
+  "K",           "Тип населённого пункта (код)",                                   "D002",               "1 город, 2 село",
+  "area",        "Тип населённого пункта",                                          "по коду K",          "Город / Село",
+  "POL",         "Пол респондента (код)",                                           "D002",               "1 мужской, 2 женский",
+  "sex",         "Пол респондента",                                                 "по коду POL",        "Мужчина / Женщина",
+  "age",         "Возраст респондента, лет",                                        "D002 subject (VOZ)", "в 2022–2024 встречаются значения < 15 и −1",
+  "under15",     "Флаг: респондент младше 15 лет (артефакт данных; анкета рассчитана на 15+)", "по age", "TRUE / FALSE"
+)
+
+harm_dict <- harm |>
+  left_join(harm_long |>
+              group_by(var) |>
+              summarise(source = paste0("D002: ", paste(unique(paste0(year, " ", file, ".", col)),
+                                                         collapse = "; ")), .groups = "drop"),
+            by = "var") |>
+  select(var, label, source, codes)
+
+d008_labels <- c(
+  RODSTVO = "Отношение к главе домохозяйства: 1 глава, 2 супруг(а), 3 сын/дочь, 4 отец/мать, 5 брат/сестра, 6 дед/бабушка, 7 внук/внучка, 8 другое родство, 9 не родственник",
+  KOL_CHL = "Число членов домохозяйства",
+  GOD_ROJD = "Год рождения (нет в 2021)", MES_ROJD = "Месяц рождения (нет в 2021)",
+  ROST = "Рост, см",
+  SEM_POL = "Семейное положение (18+): 1 никогда не состоял(а), 2 в браке, 3 вдовец/вдова, 4 разведён(а)",
+  UROV = "Образование: 1 дошкольное, 2 начальное, 3 основное среднее, 4 среднее / ТиПО, 5 высшее, 6 послевузовское, 7 нет",
+  VR_OTS = "Временно отсутствует / присутствует на 1 января (статус + причина)",
+  IZM_SOST = "Переключатель: состав домохозяйства менялся (0/1)",
+  PR_IZA = "Изменение состава в апреле (статус × причина)", PR_IZI = "Изменение состава в июле (статус × причина)",
+  PR_IZO = "Изменение состава в октябре (статус × причина)", PR_IZYA = "Изменение состава в январе (статус × причина)",
+  STATUS = "Статус основной деятельности на 1 января (15+): 1 наёмный, 2 не по найму, 3 безработный, 4 пенсионер, 5 учащийся, 6 домохозяйство/уход, 7 нетрудоспособный, 8 прочие неактивные",
+  STATUSF = "11 — работает по найму у физического лица",
+  IZM_STATUS = "Переключатель: статус менялся в течение года (0/1)",
+  STATUS1 = "Статус в 1 квартале (коды как STATUS)", STATUS2 = "Статус во 2 квартале (коды как STATUS)",
+  STATUS3 = "Статус в 3 квартале (коды как STATUS)", STATUS4 = "Статус в 4 квартале (коды как STATUS)",
+  STATUSF1 = "Работа у физлица, 1 квартал", STATUSF2 = "Работа у физлица, 2 квартал",
+  STATUSF3 = "Работа у физлица, 3 квартал", STATUSF4 = "Работа у физлица, 4 квартал",
+  ZT = "Время на заполнение (не заполнено)",
+  FIZ = "Занятия физкультурой (только 2024): 1 самостоятельно, 2 в учебном заведении, 3 профессионально, 4 нет",
+  FIZM = "Где занимается физкультурой (2024): 1 секции/залы, 2 самостоятельно, 3 и то и другое",
+  FIZCH = "Частота занятий физкультурой (2024): 1–7 дней в неделю, 8 от случая к случаю",
+  FIZMIN = "Средняя длительность занятия, минут (2024)"
+)
+
+reg_labels <- c(
+  reg_region = "Название региона в региональном файле",
+  reg_population = "Численность населения региона (Талдау, показатель 703831)",
+  reg_health_exp_pc = "Текущие расходы организаций здравоохранения и социального обслуживания на человека, тг (БНС, ФХД, лист 1.1; все годы)",
+  reg_doctors_per10k = "Врачи всех специальностей на 10 000 населения (Талдау 704315 / население)",
+  reg_nurses_per10k = "Средний медицинский персонал на 10 000 населения (Талдау 704317 / население)",
+  reg_beds_per10k = "Больничные койки на 10 000 населения (Талдау 704310 / население)",
+  reg_health_exp_med_pc = "Текущие расходы организаций здравоохранения (без соцуслуг) на человека, тг (БНС, лист 1.2; 2022–2024)",
+  reg_hospital_exp_pc = "Текущие расходы больничных организаций на человека, тг (БНС, лист 1.3; 2022–2024)",
+  reg_primary_exp_pc = "Текущие расходы общей врачебной практики на человека, тг (БНС, лист 1.4; 2022–2024)"
+)
+
+raw_label <- function(col, prefix, file) {
+  orig <- sub(paste0("^", prefix), "", col)
+  hits <- harm_long |> filter(file == !!file, col == orig) |> arrange(year)
+  meaning <- if (nrow(hits) == 0) {
+    "негармонизированная колонка — смысл по бланку анкеты года"
+  } else {
+    paste0("в ", hits$year, ": ", hits$var, collapse = "; ")
+  }
+  paste0("Исходная колонка ", file, ".csv ", orig, " — ", meaning)
+}
+
+dictionary <- bind_rows(
+  base_labels,
+  harm_dict,
+  tibble(var = grep("^d008_", names(dataset), value = TRUE)) |>
+    mutate(orig = sub("^d008_", "", var),
+           label = coalesce(d008_labels[orig], paste("Колонка D008", orig)),
+           source = paste0("D008 kontr_k.csv, ", orig), codes = "") |>
+    select(-orig),
+  tibble(var = grep("^reg_", names(dataset), value = TRUE)) |>
+    mutate(label = coalesce(reg_labels[var], var), source = "Региональные показатели", codes = ""),
+  tibble(var = grep("^subj_", names(dataset), value = TRUE)) |>
+    mutate(label = map_chr(var, \(v) raw_label(v, "subj_", "subject")),
+           source = "D002 subject.csv", codes = ""),
+  tibble(var = grep("^oc_", names(dataset), value = TRUE)) |>
+    mutate(label = map_chr(var, \(v) raw_label(v, "oc_", "ocenka")),
+           source = "D002 ocenka.csv", codes = "")
+)
+
+# в каждой ли колонке есть подпись, и нет ли подписей без колонок
+stopifnot(setequal(dictionary$var, names(dataset)), !anyDuplicated(dictionary$var))
+
+# подпись = смысл + коды; именно её показывает RStudio в View()
+full_label <- with(dictionary, if_else(codes == "" | is.na(codes), label, paste0(label, " [", codes, "]")))
+names(full_label) <- dictionary$var
+for (v in names(dataset)) attr(dataset[[v]], "label") <- unname(full_label[v])
+
+dictionary |>
+  filter(!startsWith(var, "subj_"), !startsWith(var, "oc_")) |>
+  head(45) |>
+  knitr::kable(caption = "Начало словаря (без исходных колонок subj_ и oc_)")
+```
+
+## 7. Сохранение
+
+```{r save}
+saveRDS(dataset, file.path(out_dir, "health_quality_dataset.rds"))
+write_csv(dataset, file.path(out_dir, "health_quality_dataset.csv"), na = "")
+write_csv(dictionary, file.path(out_dir, "health_quality_dictionary.csv"), na = "")
+
+# проверка: подписи переживают сохранение
+check <- readRDS(file.path(out_dir, "health_quality_dataset.rds"))
+stopifnot(identical(attr(check$quality_state, "label"), unname(full_label["quality_state"])))
+
+tibble(Файл = c("health_quality_dataset.rds", "health_quality_dataset.csv", "health_quality_dictionary.csv"),
+       `Размер, МБ` = round(file.size(file.path(out_dir, Файл)) / 1e6, 1)) |>
+  knitr::kable()
+```
