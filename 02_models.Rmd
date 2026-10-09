@@ -17,8 +17,13 @@ dataset_file <- file.path("Data", "health_quality_dataset.rds")
 dataset <- readRDS(dataset_file)
 dataset <- dataset %>% 
   filter(year > 2021) %>% 
-  filter(age>14)
+  filter(age>14) %>%
+  filter(quality_state != 89) # 89 — код для "затрудняюсь ответить"
+
+dataset$quality_state %>% as.factor() %>% summary()
+
 ```
+
 
 ```{r}
 # Recode variables
