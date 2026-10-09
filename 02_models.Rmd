@@ -6,9 +6,8 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = TRUE)
 ```
-
 
 ```{r}
 # Download and filter
@@ -28,6 +27,16 @@ dataset <- dataset %>%
          unmet_fin = ifelse(unmet_reason_3 == 1 | unmet_reason_4 == 1, 1, 0), 
          unmet_org = ifelse(unmet_reason_5 == 1 | unmet_reason_6 == 1 | unmet_reason_8 == 1 | unmet_reason_9 == 1, 1, 0), 
          unmet_ter = ifelse(unmet_reason_7 == 1, 1, 0))
+
+
+dataset <- dataset %>%
+  mutate(edu = as.numeric(d008_UROV) + 1) %>% 
+  mutate(edu = replace_values(edu, 8 ~ 1)) %>% 
+  mutate(across(c(sex, edu, year, area, region_name), haven::as_factor))
+
+dataset$edu <- factor(dataset$edu, levels = c("1", "2", "3", "4", "5", "6", "7"), labels = c( "нет", "дошкольное", "начальное", "основное среднее", "среднее / ТиПО", "высшее", "послевузовское"))
+attributes(dataset$edu)$label <- "Образование: 1 нет, 2 дошкольное, 3 начальное, 4 основное среднее, 5 среднее / ТиПО, 6 высшее, 7 послевузовское"
+
 ```
 
 
@@ -38,78 +47,75 @@ dataset_norm <- dataset %>%
   group_by(year) %>% 
   mutate_at(vars(quality_state, inc_eq_real_log, age, sat_health, reg_doctors_per10k, reg_health_exp_med_pc),  ~ scales::rescale(.) %>% as.vector) %>% 
   ungroup()
-head(dataset_norm, 5)
+
+#head(dataset_norm, 5)  #check
 ```
 
 ## Socdem
 
 ```{r}
 library(lme4)
-m1 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + inc_eq_real_log + (1 | region_name), data = dataset_norm)
-summary(m1)
+m1 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + (1 | region_name), data = dataset_norm)
+
+#Sensitivity analysis for area type, as 3 out of 20 regions (Astana, Almaty, Shymkent) do not have rural area subgroup
+dataset_sa <- dataset %>% 
+  filter(region_name != c("г. Алматы", "г. Астана", "г. Шымкент"))
+  
+m1_sa <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + (1 | region_name), data = dataset_sa)
+sjPlot::tab_model(m1, m1_sa, auto.label = F)
 ```
 
 ```{r}
-m2 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + inc_eq_real_log + sat_health + (1 | region_name), data = dataset_norm)
-summary(m2)
+m2 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health + (1 | region_name), data = dataset_norm)
 ```
 
 ```{r}
-sjPlot::tab_model(m1, m2)
+sjPlot::tab_model(m1, m2, auto.label = F)
 ```
 
 ## Experience of Interactions
 
 ```{r}
-m3 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + inc_eq_real_log + sat_health + as.factor(unmet) + (1 | region_name), data = dataset_norm)
-summary(m3)
+m3 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health +  as.factor(unmet) + (1 | region_name), data = dataset_norm)
+sjPlot::tab_model(m3, auto.label = F)
 ```
 
 ```{r}
 dataset_norm_exp <- dataset_norm %>% 
   filter(unmet == 1)
 
-m4 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + inc_eq_real_log + sat_health + as.factor(unmet_ind) + as.factor(unmet_fin) + as.factor(unmet_org) + as.factor(unmet_ter) + (1 | region_name), data = dataset_norm_exp)
-summary(m4)
+m4 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health +  as.factor(unmet_ind) + as.factor(unmet_fin) + as.factor(unmet_org) + as.factor(unmet_ter) + (1 | region_name), data = dataset_norm_exp)
 ```
 
 ```{r}
-sjPlot::tab_model(m3, m4)
+sjPlot::tab_model(m3, m4, auto.label = F)
 ```
 
 
 ## Regional Differences
 
 ```{r}
-m5 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + inc_eq_real_log + sat_health + reg_doctors_per10k + (1 | region_name), data = dataset_norm)
-summary(m5)
+m5 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
 ```
 
 ```{r}
-m6 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + inc_eq_real_log + sat_health + reg_doctors_per10k + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
-summary(m6)
+m6 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health + reg_doctors_per10k + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
 ```
 
 
 ```{r}
-sjPlot::tab_model(m5, m6)
+sjPlot::tab_model(m5, m6, auto.label = F)
+performance::check_collinearity(m6)
 ```
 
 
 ## Interaction Effects
 
 ```{r}
-m7 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + inc_eq_real_log * reg_doctors_per10k + sat_health + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
-summary(m7)
-```
-
-
-```{r}
-m8 <- lmer(quality_state ~ as.factor(sex) + age + as.factor(d008_UROV) + as.factor(year) + inc_eq_real_log * reg_health_exp_med_pc + sat_health + reg_doctors_per10k + (1 | region_name), data = dataset_norm)
-summary(m8)
+m7 <- lmer(quality_state ~ sex + age + edu + year + area + sat_health + inc_eq_real_log * reg_doctors_per10k + (1 | region_name), data = dataset_norm)
 ```
 
 ```{r}
-sjPlot::tab_model(m7, m8)
+sjPlot::tab_model(m7, auto.label = F)
 ```
 
