@@ -9,18 +9,27 @@ output: html_document
 knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = TRUE)
 ```
 
+## Data preprocessing
+
 ```{r}
-# Download and filter
 library(tidyverse)
 
 dataset_file <- file.path("Data", "health_quality_dataset.rds")
 dataset <- readRDS(dataset_file)
 dataset <- dataset %>% 
   filter(year > 2021) %>% 
-  filter(age>14) %>%
-  filter(quality_state != 89) # 89 — код для "затрудняюсь ответить"
+  filter(age>14)
 
-dataset$quality_state %>% as.factor() %>% summary()
+# 89 — код «не применимо / затрудняюсь ответить»: заменяем на NA в шкалах, которые входят в модели
+scales_89 <- c("quality_state", "sat_health")
+
+dataset %>%
+  summarise(across(all_of(scales_89), \(x) sum(x == 89, na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "Переменная", values_to = "Заменено 89 на NA") %>%
+  knitr::kable()
+
+dataset <- dataset %>%
+  mutate(across(all_of(scales_89), \(x) na_if(x, 89L)))
 
 ```
 
@@ -33,7 +42,6 @@ dataset <- dataset %>%
          unmet_org = ifelse(unmet_reason_5 == 1 | unmet_reason_6 == 1 | unmet_reason_8 == 1 | unmet_reason_9 == 1, 1, 0), 
          unmet_ter = ifelse(unmet_reason_7 == 1, 1, 0))
 
-
 dataset <- dataset %>%
   mutate(edu = as.numeric(d008_UROV) + 1) %>% 
   mutate(edu = replace_values(edu, 8 ~ 1)) %>% 
@@ -42,6 +50,25 @@ dataset <- dataset %>%
 dataset$edu <- factor(dataset$edu, levels = c("1", "2", "3", "4", "5", "6", "7"), labels = c( "нет", "дошкольное", "начальное", "основное среднее", "среднее / ТиПО", "высшее", "послевузовское"))
 attributes(dataset$edu)$label <- "Образование: 1 нет, 2 дошкольное, 3 начальное, 4 основное среднее, 5 среднее / ТиПО, 6 высшее, 7 послевузовское"
 
+```
+
+```{r}
+# Удаляем пропуски по всем переменным моделей m1–m7, чтобы все модели оценивались на одной
+# выборке (иначе N различается и модели нельзя сравнивать).
+model_vars <- c("quality_state", "sex", "age", "edu", "year", "area", "inc_eq_real_log",
+                "sat_health", "unmet", "reg_doctors_per10k", "reg_health_exp_med_pc", "region_name")
+
+n_before <- nrow(dataset)
+dataset %>%
+  summarise(across(all_of(model_vars), \(x) sum(is.na(x)))) %>%
+  pivot_longer(everything(), names_to = "Переменная", values_to = "NA") %>%
+  filter(`NA` > 0) %>%
+  knitr::kable(caption = "Пропуски в переменных моделей")
+
+dataset <- dataset %>% drop_na(all_of(model_vars))
+cat("Удалено строк с NA:", n_before - nrow(dataset), "из", n_before,
+    sprintf("(%.1f%%)", 100 * (n_before - nrow(dataset)) / n_before),
+    "; осталось:", nrow(dataset), "\n")
 ```
 
 
@@ -56,7 +83,8 @@ dataset_norm <- dataset %>%
 #head(dataset_norm, 5)  #check
 ```
 
-## Socdem
+## Modeling
+### Socdem
 
 ```{r}
 library(lme4)
@@ -78,7 +106,7 @@ m2 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat
 sjPlot::tab_model(m1, m2, auto.label = F)
 ```
 
-## Experience of Interactions
+### Experience of Interactions
 
 ```{r}
 m3 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health +  as.factor(unmet) + (1 | region_name), data = dataset_norm)
@@ -97,7 +125,7 @@ sjPlot::tab_model(m3, m4, auto.label = F)
 ```
 
 
-## Regional Differences
+### Regional Differences
 
 ```{r}
 m5 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
@@ -114,7 +142,7 @@ performance::check_collinearity(m6)
 ```
 
 
-## Interaction Effects
+### Interaction Effects
 
 ```{r}
 m7 <- lmer(quality_state ~ sex + age + edu + year + area + sat_health + inc_eq_real_log * reg_doctors_per10k + (1 | region_name), data = dataset_norm)
