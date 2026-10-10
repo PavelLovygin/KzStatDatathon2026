@@ -50,12 +50,16 @@ dataset <- dataset %>%
 dataset$edu <- factor(dataset$edu, levels = c("1", "2", "3", "4", "5", "6", "7"), labels = c( "нет", "дошкольное", "начальное", "основное среднее", "среднее / ТиПО", "высшее", "послевузовское"))
 attributes(dataset$edu)$label <- "Образование: 1 нет, 2 дошкольное, 3 начальное, 4 основное среднее, 5 среднее / ТиПО, 6 высшее, 7 послевузовское"
 
+dataset$edu %>% as.factor() %>% summary()
+
+dataset$has_higher_edu <- ifelse(dataset$edu == "высшее", 1, 0)
+dataset$has_higher_edu %>% as.factor() %>% summary()
 ```
 
 ```{r}
 # Удаляем пропуски по всем переменным моделей m1–m7, чтобы все модели оценивались на одной
 # выборке (иначе N различается и модели нельзя сравнивать).
-model_vars <- c("quality_state", "sex", "age", "edu", "year", "area", "inc_eq_real_log",
+model_vars <- c("quality_state", "sex", "age", "has_higher_edu", "year", "area", "inc_eq_real_log",
                 "sat_health", "unmet", "reg_doctors_per10k", "reg_health_exp_med_pc", "region_name")
 
 n_before <- nrow(dataset)
@@ -77,7 +81,7 @@ cat("Удалено строк с NA:", n_before - nrow(dataset), "из", n_befo
 # Normalize Data
 dataset_norm <- dataset %>%
   group_by(year) %>% 
-  mutate_at(vars(quality_state, inc_eq_real_log, age, sat_health, reg_doctors_per10k, reg_health_exp_med_pc),  ~ scales::rescale(.) %>% as.vector) %>% 
+  mutate_at(vars(quality_state, inc_eq_real_log, age, has_higher_edu, sat_health, reg_doctors_per10k, reg_health_exp_med_pc),  ~ scales::rescale(.) %>% as.vector) %>% 
   ungroup()
 
 #head(dataset_norm, 5)  #check
@@ -88,18 +92,18 @@ dataset_norm <- dataset %>%
 
 ```{r}
 library(lme4)
-m1 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + (1 | region_name), data = dataset_norm)
+m1 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + (1 | region_name), data = dataset_norm)
 
 #Sensitivity analysis for area type, as 3 out of 20 regions (Astana, Almaty, Shymkent) do not have rural area subgroup
-dataset_sa <- dataset %>% 
-  filter(region_name != c("г. Алматы", "г. Астана", "г. Шымкент"))
+dataset_sa <- dataset_norm %>% 
+  filter(!(region_name %in%  c("г. Алматы", "г. Астана", "г. Шымкент")))
   
-m1_sa <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + (1 | region_name), data = dataset_sa)
+m1_sa <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + (1 | region_name), data = dataset_sa)
 sjPlot::tab_model(m1, m1_sa, auto.label = F)
 ```
 
 ```{r}
-m2 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health + (1 | region_name), data = dataset_norm)
+m2 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health + (1 | region_name), data = dataset_norm)
 ```
 
 ```{r}
@@ -109,7 +113,7 @@ sjPlot::tab_model(m1, m2, auto.label = F)
 ### Experience of Interactions
 
 ```{r}
-m3 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health +  as.factor(unmet) + (1 | region_name), data = dataset_norm)
+m3 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health +  as.factor(unmet) + (1 | region_name), data = dataset_norm)
 sjPlot::tab_model(m3, auto.label = F)
 ```
 
@@ -117,7 +121,7 @@ sjPlot::tab_model(m3, auto.label = F)
 dataset_norm_exp <- dataset_norm %>% 
   filter(unmet == 1)
 
-m4 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health +  as.factor(unmet_ind) + as.factor(unmet_fin) + as.factor(unmet_org) + as.factor(unmet_ter) + (1 | region_name), data = dataset_norm_exp)
+m4 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health +  as.factor(unmet_ind) + as.factor(unmet_fin) + as.factor(unmet_org) + as.factor(unmet_ter) + (1 | region_name), data = dataset_norm_exp)
 ```
 
 ```{r}
@@ -128,11 +132,11 @@ sjPlot::tab_model(m3, m4, auto.label = F)
 ### Regional Differences
 
 ```{r}
-m5 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
+m5 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
 ```
 
 ```{r}
-m6 <- lmer(quality_state ~ sex + age + edu + year + area + inc_eq_real_log + sat_health + reg_doctors_per10k + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
+m6 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health + reg_doctors_per10k + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
 ```
 
 
@@ -145,7 +149,7 @@ performance::check_collinearity(m6)
 ### Interaction Effects
 
 ```{r}
-m7 <- lmer(quality_state ~ sex + age + edu + year + area + sat_health + inc_eq_real_log * reg_doctors_per10k + (1 | region_name), data = dataset_norm)
+m7 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + sat_health + inc_eq_real_log * reg_doctors_per10k + (1 | region_name), data = dataset_norm)
 ```
 
 ```{r}
