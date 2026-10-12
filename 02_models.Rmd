@@ -53,7 +53,7 @@ attributes(dataset$edu)$label <- "Образование: 1 нет, 2 дошко
 
 dataset$edu %>% as.factor() %>% summary()
 
-dataset$has_higher_edu <- ifelse(dataset$edu == "высшее", 1, 0)
+dataset$has_higher_edu <- ifelse(dataset$edu %in% c("высшее", "послевузовское"), 1, 0)   # высшее, включая послевузовское
 dataset$has_higher_edu %>% as.factor() %>% summary()
 ```
 
@@ -77,16 +77,15 @@ cat("Удалено строк с NA:", n_before - nrow(dataset), "из", n_befo
 ```
 
 ```{r}
-# Центрирование: доход — внутри региона + среднее по региону, остальные непрерывные — по общему среднему.
+# Центрирование: только доход — внутри региона + среднее по региону. Остальные переменные не центрируются:
+# центрирование по общему среднему меняет лишь константу, а прогнозы и графики остаются в исходных единицах.
 # Все модели качества считаются на этих данных.
 dataset_norm <- dataset %>%
   mutate(
     # доход: разложение на средний доход региона (inc_cm, отклонение от общего среднего)
     # и положение человека относительно своего региона (inc_eq_real_log после центрирования)
     inc_cm = ave(inc_eq_real_log, region_name) - mean(inc_eq_real_log),
-    inc_eq_real_log = inc_eq_real_log - ave(inc_eq_real_log, region_name),
-    # остальные непрерывные предикторы — по общему среднему; бинарные и зависимая переменная не центрируются
-    across(c(age, sat_health, svc_index, reg_doctors_per10k, reg_health_exp_med_pc), \(x) x - mean(x))
+    inc_eq_real_log = inc_eq_real_log - ave(inc_eq_real_log, region_name)
   )
 ```
 
@@ -162,13 +161,14 @@ m7 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + svc_index 
 ```{r}
 # Подписи задаём явно: иначе sjPlot берёт длинные подписи столбцов датасета и сжимает график.
 # Доход ограничен диапазоном [-1; 1] (почти все наблюдения), врачи — среднее ± стандартное отклонение.
-sjPlot::plot_model(m7, type = "pred", terms = c("inc_eq_real_log [-1:1]", "reg_doctors_per10k [meansd]"),
+# type = "emm": прогноз усреднён по полу, году, типу местности (а не для базовой группы).
+sjPlot::plot_model(m7, type = "emm", terms = c("inc_eq_real_log [-1:1]", "reg_doctors_per10k [meansd]"),
                    title = "m7: доход и обеспеченность врачами",
                    axis.title = c("Доход относительно среднего по региону (лог)", "Оценка качества"),
-                   legend.title = "Врачи на 10 000,\nот среднего")
-sjPlot::plot_model(m7, type = "pred", terms = c("reg_doctors_per10k", "inc_eq_real_log [-0.5, 0, 0.5]"),
+                   legend.title = "Врачи на 10 000\nжителей")
+sjPlot::plot_model(m7, type = "emm", terms = c("reg_doctors_per10k", "inc_eq_real_log [-0.5, 0, 0.5]"),
                    title = "m7: обеспеченность врачами и доход",
-                   axis.title = c("Врачи на 10 000 жителей, от среднего", "Оценка качества"),
+                   axis.title = c("Врачи на 10 000 жителей", "Оценка качества"),
                    legend.title = "Доход относительно\nсреднего по региону (лог)")
 
 sjPlot::tab_model(m7, auto.label = F)
@@ -205,7 +205,7 @@ dataset_acc <- dataset_acc %>%
   mutate(across(c(sex, edu, year, area, region_name), haven::as_factor))
 
 dataset_acc$edu <- factor(dataset_acc$edu, levels = c("1", "2", "3", "4", "5", "6", "7"), labels = c( "нет", "дошкольное", "начальное", "основное среднее", "среднее / ТиПО", "высшее", "послевузовское"))
-dataset_acc$has_higher_edu <- ifelse(dataset_acc$edu == "высшее", 1, 0)
+dataset_acc$has_higher_edu <- ifelse(dataset_acc$edu %in% c("высшее", "послевузовское"), 1, 0)   # высшее, включая послевузовское
 
 # Удаляем пропуски по всем переменным моделей
 model_vars_acc <- c("access_state", "sex", "age", "has_higher_edu", "year", "area", "inc_eq_real_log", "svc_index",
@@ -223,15 +223,13 @@ cat("Удалено строк с NA:", n_before_acc - nrow(dataset_acc), "из"
     sprintf("(%.1f%%)", 100 * (n_before_acc - nrow(dataset_acc)) / n_before_acc),
     "; осталось:", nrow(dataset_acc), "\n")
 
-# Центрирование — как для качества: доход внутри региона + среднее по региону, остальное по общему среднему
+# Центрирование — как для качества: только доход (внутри региона + среднее по региону)
 dataset_acc_norm <- dataset_acc %>%
   mutate(
     # доход: разложение на средний доход региона (inc_cm, отклонение от общего среднего)
     # и положение человека относительно своего региона (inc_eq_real_log после центрирования)
     inc_cm = ave(inc_eq_real_log, region_name) - mean(inc_eq_real_log),
-    inc_eq_real_log = inc_eq_real_log - ave(inc_eq_real_log, region_name),
-    # остальные непрерывные предикторы — по общему среднему; бинарные и зависимая переменная не центрируются
-    across(c(age, sat_health, svc_index, reg_doctors_per10k, reg_health_exp_med_pc), \(x) x - mean(x))
+    inc_eq_real_log = inc_eq_real_log - ave(inc_eq_real_log, region_name)
   )
 
 ```
@@ -297,13 +295,14 @@ a7 <- lmer(access_state ~ sex + age + has_higher_edu + year + area + svc_index +
 ```{r}
 # Подписи задаём явно: иначе sjPlot берёт длинные подписи столбцов датасета и сжимает график.
 # Доход ограничен диапазоном [-1; 1] (почти все наблюдения), врачи — среднее ± стандартное отклонение.
-sjPlot::plot_model(a7, type = "pred", terms = c("inc_eq_real_log [-1:1]", "reg_doctors_per10k [meansd]"),
+# type = "emm": прогноз усреднён по полу, году, типу местности (а не для базовой группы).
+sjPlot::plot_model(a7, type = "emm", terms = c("inc_eq_real_log [-1:1]", "reg_doctors_per10k [meansd]"),
                    title = "a7: доход и обеспеченность врачами",
                    axis.title = c("Доход относительно среднего по региону (лог)", "Оценка доступности"),
-                   legend.title = "Врачи на 10 000,\nот среднего")
-sjPlot::plot_model(a7, type = "pred", terms = c("reg_doctors_per10k", "inc_eq_real_log [-0.5, 0, 0.5]"),
+                   legend.title = "Врачи на 10 000\nжителей")
+sjPlot::plot_model(a7, type = "emm", terms = c("reg_doctors_per10k", "inc_eq_real_log [-0.5, 0, 0.5]"),
                    title = "a7: обеспеченность врачами и доход",
-                   axis.title = c("Врачи на 10 000 жителей, от среднего", "Оценка доступности"),
+                   axis.title = c("Врачи на 10 000 жителей", "Оценка доступности"),
                    legend.title = "Доход относительно\nсреднего по региону (лог)")
 
 sjPlot::tab_model(a7, auto.label = F)
