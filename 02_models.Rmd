@@ -13,6 +13,7 @@ knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = TRUE)
 
 ```{r}
 library(tidyverse)
+library(misty)
 
 dataset_file <- file.path("Data", "health_quality_dataset.rds")
 dataset <- readRDS(dataset_file)
@@ -59,7 +60,7 @@ dataset$has_higher_edu %>% as.factor() %>% summary()
 ```{r}
 # Удаляем пропуски по всем переменным моделей m1–m7, чтобы все модели оценивались на одной
 # выборке (иначе N различается и модели нельзя сравнивать).
-model_vars <- c("quality_state", "sex", "age", "has_higher_edu", "year", "area", "inc_eq_real_log",
+model_vars <- c("quality_state", "sex", "age", "has_higher_edu", "year", "area", "inc_eq_real_log", "svc_index",
                 "sat_health", "unmet", "reg_doctors_per10k", "reg_health_exp_med_pc", "region_name")
 
 n_before <- nrow(dataset)
@@ -75,35 +76,38 @@ cat("Удалено строк с NA:", n_before - nrow(dataset), "из", n_befo
     "; осталось:", nrow(dataset), "\n")
 ```
 
-
-
 ```{r}
-# Normalize Data
+# Центрирование: доход — внутри региона + среднее по региону, остальные непрерывные — по общему среднему.
+# Все модели качества считаются на этих данных.
 dataset_norm <- dataset %>%
-  group_by(year) %>% 
-  mutate_at(vars(quality_state, inc_eq_real_log, age, has_higher_edu, sat_health, reg_doctors_per10k, reg_health_exp_med_pc),  ~ scales::rescale(.) %>% as.vector) %>% 
-  ungroup()
-
-#head(dataset_norm, 5)  #check
+  mutate(
+    # доход: разложение на средний доход региона (inc_cm, отклонение от общего среднего)
+    # и положение человека относительно своего региона (inc_eq_real_log после центрирования)
+    inc_cm = ave(inc_eq_real_log, region_name) - mean(inc_eq_real_log),
+    inc_eq_real_log = inc_eq_real_log - ave(inc_eq_real_log, region_name),
+    # остальные непрерывные предикторы — по общему среднему; бинарные и зависимая переменная не центрируются
+    across(c(age, sat_health, svc_index, reg_doctors_per10k, reg_health_exp_med_pc), \(x) x - mean(x))
+  )
 ```
+
 
 ## Modeling
 ### Socdem
 
 ```{r}
 library(lme4)
-m1 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + (1 | region_name), data = dataset_norm)
+m1 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + inc_cm + (1 | region_name), data = dataset_norm)
 
 #Sensitivity analysis for area type, as 3 out of 20 regions (Astana, Almaty, Shymkent) do not have rural area subgroup
 dataset_sa <- dataset_norm %>% 
   filter(!(region_name %in%  c("г. Алматы", "г. Астана", "г. Шымкент")))
   
-m1_sa <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + (1 | region_name), data = dataset_sa)
+m1_sa <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + inc_cm + (1 | region_name), data = dataset_sa)
 sjPlot::tab_model(m1, m1_sa, auto.label = F)
 ```
 
 ```{r}
-m2 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health + (1 | region_name), data = dataset_norm)
+m2 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health + inc_cm + (1 | region_name), data = dataset_norm)
 ```
 
 ```{r}
@@ -113,30 +117,32 @@ sjPlot::tab_model(m1, m2, auto.label = F)
 ### Experience of Interactions
 
 ```{r}
-m3 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health +  as.factor(unmet) + (1 | region_name), data = dataset_norm)
-sjPlot::tab_model(m3, auto.label = F)
+m3 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health +  as.factor(unmet) + inc_cm + (1 | region_name), data = dataset_norm)
+sjPlot::tab_model(m2, m3, auto.label = F)
 ```
 
 ```{r}
-dataset_norm_exp <- dataset_norm %>% 
+dataset_exp <- dataset_norm %>% 
   filter(unmet == 1)
 
-m4 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health +  as.factor(unmet_ind) + as.factor(unmet_fin) + as.factor(unmet_org) + as.factor(unmet_ter) + (1 | region_name), data = dataset_norm_exp)
-```
+m4 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health +  as.factor(unmet_ind) + as.factor(unmet_fin) + as.factor(unmet_org) + as.factor(unmet_ter) + inc_cm + (1 | region_name), data = dataset_exp)
 
-```{r}
 sjPlot::tab_model(m3, m4, auto.label = F)
+
 ```
 
 
 ### Regional Differences
 
 ```{r}
-m5 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
+m5 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health + reg_doctors_per10k + inc_cm + (1 | region_name), data = dataset_norm)
+
 ```
 
 ```{r}
-m6 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + inc_eq_real_log + sat_health + reg_doctors_per10k + reg_health_exp_med_pc + (1 | region_name), data = dataset_norm)
+m6 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health + reg_doctors_per10k + reg_health_exp_med_pc + inc_cm + (1 | region_name), data = dataset_norm)
+
+cor(dataset_norm$reg_health_exp_med_pc, dataset_norm$reg_doctors_per10k)
 ```
 
 
@@ -145,14 +151,160 @@ sjPlot::tab_model(m5, m6, auto.label = F)
 performance::check_collinearity(m6)
 ```
 
+Не ьерем затраты на чела
 
 ### Interaction Effects
 
 ```{r}
-m7 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + sat_health + inc_eq_real_log * reg_doctors_per10k + (1 | region_name), data = dataset_norm)
+m7 <- lmer(quality_state ~ sex + age + has_higher_edu + year + area + svc_index + sat_health + inc_eq_real_log * reg_doctors_per10k + inc_cm + (1 | region_name), data = dataset_norm)
 ```
 
 ```{r}
+# Подписи задаём явно: иначе sjPlot берёт длинные подписи столбцов датасета и сжимает график.
+# Доход ограничен диапазоном [-1; 1] (почти все наблюдения), врачи — среднее ± стандартное отклонение.
+sjPlot::plot_model(m7, type = "pred", terms = c("inc_eq_real_log [-1:1]", "reg_doctors_per10k [meansd]"),
+                   title = "m7: доход и обеспеченность врачами",
+                   axis.title = c("Доход относительно среднего по региону (лог)", "Оценка качества"),
+                   legend.title = "Врачи на 10 000,\nот среднего")
+sjPlot::plot_model(m7, type = "pred", terms = c("reg_doctors_per10k", "inc_eq_real_log [-0.5, 0, 0.5]"),
+                   title = "m7: обеспеченность врачами и доход",
+                   axis.title = c("Врачи на 10 000 жителей, от среднего", "Оценка качества"),
+                   legend.title = "Доход относительно\nсреднего по региону (лог)")
+
 sjPlot::tab_model(m7, auto.label = F)
 ```
 
+
+## Доступность государственной медицины (access_state)
+
+Те же шаги и модели, что выше, но зависимая переменная — удовлетворённость доступностью
+государственной медицины (Q15.3) вместо качества. Выборка готовится заново: пропуски в
+доступности не совпадают с пропусками в качестве.
+
+```{r}
+# Подготовка данных: фильтр, 89 → NA, перекодировки
+dataset_acc <- readRDS(dataset_file) %>% 
+  filter(year > 2021) %>% 
+  filter(age > 14)
+
+scales_89_acc <- c("access_state", "sat_health")
+
+dataset_acc %>%
+  summarise(across(all_of(scales_89_acc), \(x) sum(x == 89, na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "Переменная", values_to = "Заменено 89 на NA") %>%
+  knitr::kable()
+
+dataset_acc <- dataset_acc %>%
+  mutate(across(all_of(scales_89_acc), \(x) na_if(x, 89L))) %>% 
+  mutate(unmet_ind = ifelse(unmet_reason_1 == 1 | unmet_reason_2 == 1, 1, 0), 
+         unmet_fin = ifelse(unmet_reason_3 == 1 | unmet_reason_4 == 1, 1, 0), 
+         unmet_org = ifelse(unmet_reason_5 == 1 | unmet_reason_6 == 1 | unmet_reason_8 == 1 | unmet_reason_9 == 1, 1, 0), 
+         unmet_ter = ifelse(unmet_reason_7 == 1, 1, 0)) %>% 
+  mutate(edu = as.numeric(d008_UROV) + 1) %>% 
+  mutate(edu = replace_values(edu, 8 ~ 1)) %>% 
+  mutate(across(c(sex, edu, year, area, region_name), haven::as_factor))
+
+dataset_acc$edu <- factor(dataset_acc$edu, levels = c("1", "2", "3", "4", "5", "6", "7"), labels = c( "нет", "дошкольное", "начальное", "основное среднее", "среднее / ТиПО", "высшее", "послевузовское"))
+dataset_acc$has_higher_edu <- ifelse(dataset_acc$edu == "высшее", 1, 0)
+
+# Удаляем пропуски по всем переменным моделей
+model_vars_acc <- c("access_state", "sex", "age", "has_higher_edu", "year", "area", "inc_eq_real_log", "svc_index",
+                    "sat_health", "unmet", "reg_doctors_per10k", "reg_health_exp_med_pc", "region_name")
+
+n_before_acc <- nrow(dataset_acc)
+dataset_acc %>%
+  summarise(across(all_of(model_vars_acc), \(x) sum(is.na(x)))) %>%
+  pivot_longer(everything(), names_to = "Переменная", values_to = "NA") %>%
+  filter(`NA` > 0) %>%
+  knitr::kable(caption = "Пропуски в переменных моделей доступности")
+
+dataset_acc <- dataset_acc %>% drop_na(all_of(model_vars_acc))
+cat("Удалено строк с NA:", n_before_acc - nrow(dataset_acc), "из", n_before_acc,
+    sprintf("(%.1f%%)", 100 * (n_before_acc - nrow(dataset_acc)) / n_before_acc),
+    "; осталось:", nrow(dataset_acc), "\n")
+
+# Центрирование — как для качества: доход внутри региона + среднее по региону, остальное по общему среднему
+dataset_acc_norm <- dataset_acc %>%
+  mutate(
+    # доход: разложение на средний доход региона (inc_cm, отклонение от общего среднего)
+    # и положение человека относительно своего региона (inc_eq_real_log после центрирования)
+    inc_cm = ave(inc_eq_real_log, region_name) - mean(inc_eq_real_log),
+    inc_eq_real_log = inc_eq_real_log - ave(inc_eq_real_log, region_name),
+    # остальные непрерывные предикторы — по общему среднему; бинарные и зависимая переменная не центрируются
+    across(c(age, sat_health, svc_index, reg_doctors_per10k, reg_health_exp_med_pc), \(x) x - mean(x))
+  )
+
+```
+
+### Socdem
+
+```{r}
+a1 <- lmer(access_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + inc_cm + (1 | region_name), data = dataset_acc_norm)
+
+# Проверка устойчивости: без трёх городов, где нет сельских жителей
+dataset_acc_sa <- dataset_acc_norm %>% 
+  filter(!(region_name %in%  c("г. Алматы", "г. Астана", "г. Шымкент")))
+
+a1_sa <- lmer(access_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + inc_cm + (1 | region_name), data = dataset_acc_sa)
+sjPlot::tab_model(a1, a1_sa, auto.label = F)
+```
+
+```{r}
+a2 <- lmer(access_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health + inc_cm + (1 | region_name), data = dataset_acc_norm)
+```
+
+```{r}
+sjPlot::tab_model(a1, a2, auto.label = F)
+```
+
+### Experience of Interactions
+
+```{r}
+a3 <- lmer(access_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health +  as.factor(unmet) + inc_cm + (1 | region_name), data = dataset_acc_norm)
+sjPlot::tab_model(a2, a3, auto.label = F)
+```
+
+```{r}
+dataset_acc_exp <- dataset_acc_norm %>% 
+  filter(unmet == 1)
+
+a4 <- lmer(access_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health +  as.factor(unmet_ind) + as.factor(unmet_fin) + as.factor(unmet_org) + as.factor(unmet_ter) + inc_cm + (1 | region_name), data = dataset_acc_exp)
+
+sjPlot::tab_model(a3, a4, auto.label = F)
+```
+
+### Regional Differences
+
+```{r}
+a5 <- lmer(access_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health + reg_doctors_per10k + inc_cm + (1 | region_name), data = dataset_acc_norm)
+```
+
+```{r}
+a6 <- lmer(access_state ~ sex + age + has_higher_edu + year + area + svc_index + inc_eq_real_log + sat_health + reg_doctors_per10k + reg_health_exp_med_pc + inc_cm + (1 | region_name), data = dataset_acc_norm)
+```
+
+```{r}
+sjPlot::tab_model(a5, a6, auto.label = F)
+performance::check_collinearity(a6)
+```
+
+### Interaction Effects
+
+```{r}
+a7 <- lmer(access_state ~ sex + age + has_higher_edu + year + area + svc_index + sat_health + inc_eq_real_log * reg_doctors_per10k + inc_cm + (1 | region_name), data = dataset_acc_norm)
+```
+
+```{r}
+# Подписи задаём явно: иначе sjPlot берёт длинные подписи столбцов датасета и сжимает график.
+# Доход ограничен диапазоном [-1; 1] (почти все наблюдения), врачи — среднее ± стандартное отклонение.
+sjPlot::plot_model(a7, type = "pred", terms = c("inc_eq_real_log [-1:1]", "reg_doctors_per10k [meansd]"),
+                   title = "a7: доход и обеспеченность врачами",
+                   axis.title = c("Доход относительно среднего по региону (лог)", "Оценка доступности"),
+                   legend.title = "Врачи на 10 000,\nот среднего")
+sjPlot::plot_model(a7, type = "pred", terms = c("reg_doctors_per10k", "inc_eq_real_log [-0.5, 0, 0.5]"),
+                   title = "a7: обеспеченность врачами и доход",
+                   axis.title = c("Врачи на 10 000 жителей, от среднего", "Оценка доступности"),
+                   legend.title = "Доход относительно\nсреднего по региону (лог)")
+
+sjPlot::tab_model(a7, auto.label = F)
+```

@@ -513,9 +513,20 @@ dataset <- dataset |>
          area = if_else(K == "2", "Село", "Город"),
          sex = if_else(POL == "2", "Женщина", "Мужчина"),
          under15 = age < 15,
-         across(all_of(setdiff(harm$var, reasons$var)), as.integer)) |>
+         across(all_of(setdiff(harm$var, reasons$var)), as.integer))
+
+# Индекс оценки госуслуг (кроме скорой помощи — это медицина): среднее по 5 вопросам без 89,
+# если ответов хотя бы 3 (α Кронбаха ≈ 0.92 в 2022–2024)
+svc_items <- c("svc_con", "svc_tax", "svc_police", "svc_fire", "svc_other_gov")
+svc_valid <- dataset |> transmute(across(all_of(svc_items), \(x) na_if(x, 89L)))
+dataset <- dataset |>
+  mutate(svc_index_n = as.integer(rowSums(!is.na(svc_valid))),
+         svc_index = if_else(svc_index_n >= 3, rowMeans(svc_valid, na.rm = TRUE), NA_real_))
+stopifnot(all(is.na(dataset$svc_index) | between(dataset$svc_index, 1, 10)))
+
+dataset <- dataset |>
   select(year, NOMER, NOMP, TE, region_name, K, area, POL, sex, age, under15,
-         all_of(harm$var), starts_with("d008_"), all_of(inc_cols), starts_with("reg_"),
+         all_of(harm$var), svc_index, svc_index_n, starts_with("d008_"), all_of(inc_cols), starts_with("reg_"),
          starts_with("subj_"), starts_with("oc_"))
 
 cat("Строк:", nrow(dataset), " столбцов:", ncol(dataset),
@@ -648,6 +659,11 @@ raw_label <- function(col, prefix, file) {
 dictionary <- bind_rows(
   base_labels,
   harm_dict,
+  tribble(
+    ~var,          ~label,                                                                        ~source,           ~codes,
+    "svc_index",   "Индекс оценки госуслуг: среднее svc_con, svc_tax, svc_police, svc_fire, svc_other_gov (без скорой помощи) по ответам 1–10, если их не меньше 3", "по svc_*", "1–10; NA — меньше 3 ответов (остальное 89)",
+    "svc_index_n", "Число вопросов о госуслугах (из 5 в индексе) с ответом 1–10, не 89",        "по svc_*",        "0–5"
+  ),
   tibble(var = grep("^d008_", names(dataset), value = TRUE)) |>
     mutate(orig = sub("^d008_", "", var),
            label = coalesce(d008_labels[orig], paste("Колонка D008", orig)),

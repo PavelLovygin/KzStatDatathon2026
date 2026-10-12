@@ -10,7 +10,7 @@
 
 
 
-<meta name="date" content="2026-10-06" />
+<meta name="date" content="2026-10-10" />
 
 <title>Сборка датасета: качество медицины глазами граждан</title>
 
@@ -1570,7 +1570,7 @@ border-radius: 0px;
 граждан</h1>
 <h3 class="subtitle">Объединение D002, D008, доходов D004 и региональных
 показателей в одну таблицу</h3>
-<h4 class="date">2026-10-06</h4>
+<h4 class="date">2026-10-10</h4>
 
 </div>
 
@@ -2506,14 +2506,25 @@ dataset &lt;- dataset |&gt;
          area = if_else(K == &quot;2&quot;, &quot;Село&quot;, &quot;Город&quot;),
          sex = if_else(POL == &quot;2&quot;, &quot;Женщина&quot;, &quot;Мужчина&quot;),
          under15 = age &lt; 15,
-         across(all_of(setdiff(harm$var, reasons$var)), as.integer)) |&gt;
+         across(all_of(setdiff(harm$var, reasons$var)), as.integer))
+
+# Индекс оценки госуслуг (кроме скорой помощи — это медицина): среднее по 5 вопросам без 89,
+# если ответов хотя бы 3 (α Кронбаха ≈ 0.92 в 2022–2024)
+svc_items &lt;- c(&quot;svc_con&quot;, &quot;svc_tax&quot;, &quot;svc_police&quot;, &quot;svc_fire&quot;, &quot;svc_other_gov&quot;)
+svc_valid &lt;- dataset |&gt; transmute(across(all_of(svc_items), \(x) na_if(x, 89L)))
+dataset &lt;- dataset |&gt;
+  mutate(svc_index_n = as.integer(rowSums(!is.na(svc_valid))),
+         svc_index = if_else(svc_index_n &gt;= 3, rowMeans(svc_valid, na.rm = TRUE), NA_real_))
+stopifnot(all(is.na(dataset$svc_index) | between(dataset$svc_index, 1, 10)))
+
+dataset &lt;- dataset |&gt;
   select(year, NOMER, NOMP, TE, region_name, K, area, POL, sex, age, under15,
-         all_of(harm$var), starts_with(&quot;d008_&quot;), all_of(inc_cols), starts_with(&quot;reg_&quot;),
+         all_of(harm$var), svc_index, svc_index_n, starts_with(&quot;d008_&quot;), all_of(inc_cols), starts_with(&quot;reg_&quot;),
          starts_with(&quot;subj_&quot;), starts_with(&quot;oc_&quot;))
 
 cat(&quot;Строк:&quot;, nrow(dataset), &quot; столбцов:&quot;, ncol(dataset),
     &quot; младше 15 лет:&quot;, sum(dataset$under15), &quot;\n&quot;)</code></pre>
-<pre><code>## Строк: 47771  столбцов: 356  младше 15 лет: 1972</code></pre>
+<pre><code>## Строк: 47771  столбцов: 358  младше 15 лет: 1972</code></pre>
 </div>
 <div id="подписи-столбцов" class="section level2">
 <h2>8. Подписи столбцов</h2>
@@ -2641,6 +2652,11 @@ raw_label &lt;- function(col, prefix, file) {
 dictionary &lt;- bind_rows(
   base_labels,
   harm_dict,
+  tribble(
+    ~var,          ~label,                                                                        ~source,           ~codes,
+    &quot;svc_index&quot;,   &quot;Индекс оценки госуслуг: среднее svc_con, svc_tax, svc_police, svc_fire, svc_other_gov (без скорой помощи) по ответам 1–10, если их не меньше 3&quot;, &quot;по svc_*&quot;, &quot;1–10; NA — меньше 3 ответов (остальное 89)&quot;,
+    &quot;svc_index_n&quot;, &quot;Число вопросов о госуслугах (из 5 в индексе) с ответом 1–10, не 89&quot;,        &quot;по svc_*&quot;,        &quot;0–5&quot;
+  ),
   tibble(var = grep(&quot;^d008_&quot;, names(dataset), value = TRUE)) |&gt;
     mutate(orig = sub(&quot;^d008_&quot;, &quot;&quot;, var),
            label = coalesce(d008_labels[orig], paste(&quot;Колонка D008&quot;, orig)),
@@ -3015,6 +3031,21 @@ ocenka.GR320_10; 2024 ocenka.GR320_10</td>
 (Q18 ≠ 1)</td>
 </tr>
 <tr class="odd">
+<td align="left">svc_index</td>
+<td align="left">Индекс оценки госуслуг: среднее svc_con, svc_tax,
+svc_police, svc_fire, svc_other_gov (без скорой помощи) по ответам 1–10,
+если их не меньше 3</td>
+<td align="left">по svc_*</td>
+<td align="left">1–10; NA — меньше 3 ответов (остальное 89)</td>
+</tr>
+<tr class="even">
+<td align="left">svc_index_n</td>
+<td align="left">Число вопросов о госуслугах (из 5 в индексе) с ответом
+1–10, не 89</td>
+<td align="left">по svc_*</td>
+<td align="left">0–5</td>
+</tr>
+<tr class="odd">
 <td align="left">d008_KOL_CHL</td>
 <td align="left">Число членов домохозяйства</td>
 <td align="left">D008 kontr_k.csv, KOL_CHL</td>
@@ -3313,20 +3344,6 @@ GR23)</td>
 <td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
 <td align="left">1 да, 0 нет</td>
 </tr>
-<tr class="odd">
-<td align="left">inc_resp</td>
-<td align="left">Личный денежный доход респондента, тг в месяц, в
-среднем за кварталы участия домохозяйства</td>
-<td align="left">D004 kv_vopr11 (+ kv_vopr0, D008)</td>
-<td align="left">0 — нет своего дохода</td>
-</tr>
-<tr class="even">
-<td align="left">inc_resp_real</td>
-<td align="left">Личный денежный доход респондента в ценах 2024 года, тг
-в месяц</td>
-<td align="left">D004 kv_vopr11 + ИПЦ Талдау 703076</td>
-<td align="left">0 — нет своего дохода</td>
-</tr>
 </tbody>
 </table>
 </div>
@@ -3357,7 +3374,7 @@ tibble(Файл = c(&quot;health_quality_dataset.rds&quot;, &quot;health_quality
 </tr>
 <tr class="even">
 <td align="left">health_quality_dataset.csv</td>
-<td align="right">49.4</td>
+<td align="right">49.7</td>
 </tr>
 <tr class="odd">
 <td align="left">health_quality_dictionary.csv</td>
